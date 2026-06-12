@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Opname Aset</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+  <header>
+    <div><small>INVENTARIS</small><h1>Opname Aset</h1></div>
+    <button id="refreshButton" class="square-button" aria-label="Perbarui">↻</button>
+  </header>
+
+  <main>
+    <section class="dashboard">
+      <article><span>Total aset</span><strong id="totalMetric">0</strong></article>
+      <article><span>Sudah opname</span><strong id="completedMetric">0</strong></article>
+      <article><span>Belum opname</span><strong id="pendingMetric">0</strong></article>
+      <article><span>Aset baik</span><strong id="goodMetric">0</strong></article>
+      <article><span>Aset rusak</span><strong id="damagedMetric">0</strong></article>
+    </section>
+
+    <section class="card">
+      <small>LANGKAH 1</small><h2>Temukan aset</h2>
+      <div id="reader" class="reader hidden"></div>
+      <button id="scanButton" class="button">Scan QR dengan kamera</button>
+      <p class="separator">ATAU MASUKKAN NOMOR ASSET</p>
+      <form id="searchForm" class="search-row">
+        <input id="assetCodeInput" placeholder="Contoh: AST-0001" autocomplete="off" autocapitalize="characters">
+        <button class="button" type="submit">Cari</button>
+      </form>
+    </section>
+
+    <section id="assetSection" class="hidden">
+      <article class="card">
+        <div class="heading-row"><div><small>DETAIL ASSET</small><h2 id="assetType">-</h2></div><b id="assetCode">-</b></div>
+        <dl>
+          <div><dt>NO LAYOUT</dt><dd id="assetLayout">-</dd></div>
+          <div><dt>USER</dt><dd id="assetUser">-</dd></div>
+          <div><dt>OPNAME</dt><dd id="assetOpname">-</dd></div>
+          <div><dt>KONDISI</dt><dd id="assetMasterCondition">-</dd></div>
+          <div class="wide"><dt>LOKASI DETAIL</dt><dd id="assetDetailLocation">-</dd></div>
+          <div><dt>KONDISI TERAKHIR</dt><dd id="assetCondition">-</dd></div>
+          <div><dt>STATUS TERAKHIR</dt><dd id="assetStatus">-</dd></div>
+          <div class="wide"><dt>TANGGAL OPNAME TERAKHIR</dt><dd id="assetLastDate">-</dd></div>
+          <div class="wide"><dt>KETERANGAN TERAKHIR</dt><dd id="assetLastNotes">-</dd></div>
+        </dl>
+      </article>
+
+      <article class="card">
+        <small>LANGKAH 2</small><h2>Update opname</h2>
+        <form id="opnameForm">
+          <fieldset><legend>KONDISI HASIL OPNAME</legend>
+            <div class="choice-row">
+              <label><input type="radio" name="condition" value="Baik" required><span>Baik</span></label>
+              <label><input type="radio" name="condition" value="Rusak" required><span>Rusak</span></label>
+            </div>
+          </fieldset>
+          <label class="field">DOKUMENTASI<input name="documentation" type="url" placeholder="Tautan foto/dokumen (opsional)"></label>
+          <label class="field">KETERANGAN<textarea name="notes" rows="3" placeholder="Catatan opname"></textarea></label>
+          <button class="button full" type="submit">Simpan opname</button>
+        </form>
+      </article>
+
+      <article class="card"><small>RIWAYAT</small><h2>Opname terakhir</h2><div id="historyList"></div></article>
+    </section>
+  </main>
+
+  <div id="loading" class="overlay hidden"><div class="spinner"></div><span>Memuat...</span></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
