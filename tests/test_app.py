@@ -147,6 +147,23 @@ class AppTest(unittest.TestCase):
         self.assertEqual(response.json["history"], [])
         self.assertTrue(response.json["warnings"])
 
+    @patch("app.get_worksheet")
+    def test_submit_repairs_log_then_updates_master_opname_and_condition(self, get_worksheet):
+        self.log.values = [["TIMESTAMP", "NOMOR ASSET"], ["OLD", "AST-OLD"]]
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Roda rusak"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(all(header in self.log.values[0] for header in application.LOG_HEADERS))
+        appended = dict(zip(self.log.values[0], self.log.appended[0]))
+        self.assertEqual(appended["OPNAME"], "DONE")
+        self.assertEqual(appended["KONDISI"], "RUSAK")
+        self.assertEqual(appended["KONDISI TERAKHIR"], "RUSAK")
+        master_updates = {item["range"]: item["values"][0][0] for item in self.master.updates}
+        self.assertEqual(master_updates["E2"], "DONE")
+        self.assertEqual(master_updates["F2"], "RUSAK")
+        self.assertIn(application.current_period_status(), master_updates.values())
+
 
 if __name__ == "__main__":
     unittest.main()

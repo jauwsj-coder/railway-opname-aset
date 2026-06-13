@@ -31,6 +31,15 @@ TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DE
 
 `LOG_OPNAME` adalah sumber utama riwayat, status dashboard, kondisi terakhir, dan Score Card.
 
+Saat submit berhasil:
+
+- Header wajib `LOG_OPNAME` yang belum ada ditambahkan otomatis tanpa menghapus data.
+- Baris `LOG_OPNAME` ditulis terlebih dahulu, baru `MASTER_ASET` diperbarui.
+- `MASTER_ASET.OPNAME` menjadi `DONE`.
+- `MASTER_ASET.KONDISI` dan `KONDISI TERAKHIR` mengikuti kondisi opname terbaru.
+- `STATUS TERAKHIR` menjadi `SUDAH OPNAME JANUARI - JUNI` atau `SUDAH OPNAME JULI - DESEMBER` sesuai tanggal aktual.
+- Web kembali ke menu scan setelah penyimpanan berhasil.
+
 ## Perhitungan Dashboard
 
 - Total aset: jumlah aset pada `MASTER_ASET` sesuai akses AREA.

@@ -135,27 +135,33 @@ def submit_opname():
         raise AppError(f"Aset {code} tidak ditemukan.", 404)
     ensure_area_access(operator, asset["AREA"])
 
-    date_value, status = now_text(), "SUDAH OPNAME"
+    date_value, status, opname_value = now_text(), current_period_status(), "DONE"
+    log = get_worksheet(LOG_SHEET)
+    ensure_required_headers(log, LOG_SHEET, LOG_HEADERS)
+    append_record(log, LOG_SHEET, LOG_HEADERS, {
+        "TIMESTAMP": date_value, "NOMOR ASSET": asset["NOMOR ASSET"], "TYPE": asset["TYPE"],
+        "NO LAYOUT": asset["NO LAYOUT"], "USER": asset["USER"], "OPNAME": opname_value,
+        "KONDISI": condition, "LOKASI DETAIL": asset["LOKASI DETAIL"], "AREA": asset["AREA"],
+        "KONDISI TERAKHIR": condition, "STATUS TERAKHIR": status, "TANGGAL OPNAME TERAKHIR": date_value,
+        "KETERANGAN TERAKHIR": notes, "NAMA PETUGAS": operator["name"], "ID USER": operator["userId"],
+        "ROLE": operator["role"],
+    })
+
     master.batch_update([
+        {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["OPNAME"]), "values": [[opname_value]]},
+        {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["KONDISI"]), "values": [[condition]]},
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["KONDISI TERAKHIR"]), "values": [[condition]]},
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["STATUS TERAKHIR"]), "values": [[status]]},
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["TANGGAL OPNAME TERAKHIR"]), "values": [[date_value]]},
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["KETERANGAN TERAKHIR"]), "values": [[notes]]},
     ], value_input_option="USER_ENTERED")
 
-    log = get_worksheet(LOG_SHEET)
-    append_record(log, LOG_SHEET, LOG_HEADERS, {
-        "TIMESTAMP": date_value, "NOMOR ASSET": asset["NOMOR ASSET"], "TYPE": asset["TYPE"],
-        "NO LAYOUT": asset["NO LAYOUT"], "USER": asset["USER"], "OPNAME": asset["OPNAME"],
-        "KONDISI": asset["KONDISI"], "LOKASI DETAIL": asset["LOKASI DETAIL"], "AREA": asset["AREA"],
-        "KONDISI TERAKHIR": condition, "STATUS TERAKHIR": status, "TANGGAL OPNAME TERAKHIR": date_value,
-        "KETERANGAN TERAKHIR": notes, "NAMA PETUGAS": operator["name"], "ID USER": operator["userId"],
-        "ROLE": operator["role"],
-    })
-
     summary, score, warnings = build_dashboard(operator)
     global_summary, global_score, _ = build_dashboard(all_area_identity())
-    write_dashboard_sheet(global_summary, global_score)
+    try:
+        write_dashboard_sheet(global_summary, global_score)
+    except AppError as error:
+        warnings.append(f"Opname tersimpan, tetapi sheet DASHBOARD belum diperbarui: {error.message}")
     return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score, "warnings": warnings})
 
 
@@ -352,6 +358,17 @@ def ensure_worksheet(spreadsheet, name, required_headers):
     return {"name": name, "addedHeaders": missing}
 
 
+def ensure_required_headers(worksheet, sheet_name, required_headers):
+    values = get_sheet_values(worksheet, sheet_name)
+    existing_headers = values[0] if values else []
+    missing = [header for header in required_headers if header not in existing_headers]
+    if not existing_headers:
+        worksheet.update([required_headers], "A1")
+    elif missing:
+        worksheet.update([missing], gspread.utils.rowcol_to_a1(1, len(existing_headers) + 1))
+    return missing
+
+
 def get_rows(worksheet, expected_headers):
     values = get_sheet_values(worksheet, worksheet.title)
     validate_headers(values, expected_headers, worksheet.title)
@@ -386,6 +403,11 @@ def serialize_log(row):
 
 def now_text():
     return datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def current_period_status():
+    month = datetime.now(ZoneInfo(TIMEZONE)).month
+    return "SUDAH OPNAME JANUARI - JUNI" if month <= 6 else "SUDAH OPNAME JULI - DESEMBER"
 
 
 def normalize(value):
