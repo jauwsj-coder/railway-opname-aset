@@ -136,6 +136,17 @@ class AppTest(unittest.TestCase):
         self.assertEqual(february["summary"]["total"], 1)
         self.assertEqual(february["summary"]["completed"], 0)
 
+    @patch("app.get_worksheet")
+    def test_asset_detail_still_loads_when_log_headers_incomplete(self, get_worksheet):
+        self.log.values = [["TIMESTAMP", "NOMOR ASSET"]]
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        response = self.client.get("/api/assets/AST-0001", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["asset"]["assetCode"], "AST-0001")
+        self.assertEqual(response.json["history"], [])
+        self.assertTrue(response.json["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()

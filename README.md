@@ -43,6 +43,8 @@ TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DE
 - Filter tanggal awal/akhir hanya memfilter data opname dari `LOG_OPNAME`.
 - Total aset tetap berasal dari `MASTER_ASET` dan tidak berubah ketika periode dipilih.
 - Jika header `LOG_OPNAME` belum lengkap, Total Aset dan Belum Opname tetap tampil dari `MASTER_ASET`; metrik berbasis log menjadi nol dan web menampilkan peringatan.
+- Pencarian aset dan form opname tetap tampil dari `MASTER_ASET` ketika header log belum lengkap. Riwayat menampilkan peringatan terpisah.
+- Submit opname tetap membutuhkan seluruh header `LOG_OPNAME`; jalankan `/api/setup` untuk melengkapinya.
 
 ## Deploy Railway
 

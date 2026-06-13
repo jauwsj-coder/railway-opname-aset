@@ -100,9 +100,13 @@ def find_asset(asset_code):
     if not asset:
         raise AppError(f"Aset {code} tidak ditemukan.", 404)
     ensure_area_access(identity, asset["AREA"])
-    history = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize(row["NOMOR ASSET"]) == code and can_access_area(identity, row["AREA"])]
-    history.reverse()
-    return jsonify({"asset": serialize_asset(asset), "history": [serialize_log(row) for row in history[:5]]})
+    history, warnings = [], []
+    try:
+        history = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize(row["NOMOR ASSET"]) == code and can_access_area(identity, row["AREA"])]
+        history.reverse()
+    except AppError as error:
+        warnings.append(f"Riwayat opname belum dapat ditampilkan: {error.message}")
+    return jsonify({"asset": serialize_asset(asset), "history": [serialize_log(row) for row in history[:5]], "warnings": warnings})
 
 
 @app.post("/api/opname")
