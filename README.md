@@ -38,7 +38,7 @@ Saat submit berhasil:
 - `MASTER_ASET.OPNAME` menjadi `DONE`.
 - `MASTER_ASET.KONDISI` dan `KONDISI TERAKHIR` mengikuti kondisi opname terbaru.
 - `STATUS TERAKHIR` menjadi `SUDAH OPNAME JANUARI - JUNI` atau `SUDAH OPNAME JULI - DESEMBER` sesuai tanggal aktual.
-- Foto dokumentasi diunggah ke Google Drive dan URL disimpan pada `DOKUMENTASI TERAKHIR`.
+- Foto dokumentasi bersifat opsional. Jika dipilih, Railway mengirim foto ke Google Apps Script upload relay dan URL Drive disimpan pada `DOKUMENTASI TERAKHIR`.
 - Web kembali ke menu scan setelah penyimpanan berhasil.
 
 ## Perhitungan Dashboard
@@ -66,46 +66,61 @@ GOOGLE_SERVICE_ACCOUNT_JSON=seluruh JSON Service Account dalam satu baris
 SETUP_TOKEN=token rahasia
 APP_SECRET_KEY=rangkaian acak panjang
 APP_TIMEZONE=Asia/Jakarta
-GOOGLE_DRIVE_PHOTO_FOLDER_ID=1FJKbL7ZniWiR1vHRzKnC7_v1vaKWK5wv
+PHOTO_UPLOAD_SCRIPT_URL=https://script.google.com/macros/s/DEPLOYMENT_ID/exec
+PHOTO_UPLOAD_SECRET=secret-upload-foto-yang-panjang
 ```
 
 Service Account wajib dibagikan sebagai **Editor** pada Google Spreadsheet.
-Bagikan juga folder Google Drive dokumentasi sebagai **Editor** kepada email Service Account. Folder default:
+Service Account tidak memerlukan akses Google Drive karena upload foto dilakukan oleh Google Apps Script sebagai akun owner.
+
+## Deploy Google Apps Script Upload Relay
+
+1. Buka [Google Apps Script](https://script.google.com/) memakai akun owner folder Drive.
+2. Buat project baru.
+3. Salin seluruh isi `apps-script/Code.gs` ke file `Code.gs`.
+4. Buka **Project Settings** dan tambahkan Script Properties:
 
 ```text
-https://drive.google.com/drive/folders/1FJKbL7ZniWiR1vHRzKnC7_v1vaKWK5wv
+PHOTO_FOLDER_ID=ID folder utama Google Drive owner
+PHOTO_UPLOAD_SECRET=secret yang sama dengan variable Railway
 ```
 
-Foto dokumentasi wajib dipilih saat opname, dengan format JPG/PNG/WEBP dan ukuran maksimal 10 MB.
+5. Atur timezone project ke `Asia/Jakarta`.
+6. Jalankan fungsi `createDailyCleanupTrigger` satu kali dari editor dan izinkan akses Drive. Ini memasang cleanup otomatis harian.
+7. Klik **Deploy > New deployment > Web app**.
+8. Pilih **Execute as: Me**.
+9. Pilih **Who has access: Anyone**.
+10. Deploy, izinkan akses, lalu salin URL `/exec` ke `PHOTO_UPLOAD_SCRIPT_URL` Railway.
+11. Set `PHOTO_UPLOAD_SECRET` Railway dengan nilai yang sama, lalu redeploy Railway.
 
-Membuat folder menjadi **Anyone with the link** tidak memberikan izin upload kepada Service Account. Buka file JSON Service Account, salin nilai `client_email`, lalu bagikan folder Drive langsung ke email tersebut sebagai **Editor**.
+Foto opsional, dengan format JPG/PNG/WEBP dan ukuran maksimal 10 MB. Apps Script menyimpan foto menggunakan kuota Drive akun owner.
 
-Tes akses Drive setelah deploy:
+Tes upload relay setelah deploy:
 
 ```text
-GET https://DOMAIN-RAILWAY-ANDA/api/test-drive-access?token=SETUP_TOKEN
+GET https://DOMAIN-RAILWAY-ANDA/api/test-photo-upload?token=SETUP_TOKEN
 ```
 
-Endpoint tersebut menampilkan email Service Account yang aktif dan mencoba membuat subfolder periode berjalan.
+Endpoint mengirim gambar tes kecil dari Railway ke Apps Script. Apps Script membuat file, lalu langsung memindahkannya ke Trash.
 
 ## Auto Housekeeping Foto Drive
 
-Foto selalu disimpan pada subfolder periode berjalan di bawah `GOOGLE_DRIVE_PHOTO_FOLDER_ID`:
+Apps Script selalu menyimpan foto pada subfolder periode berjalan di bawah folder `PHOTO_FOLDER_ID`:
 
 ```text
 YYYY-Jan-Jun
 YYYY-Jul-Des
 ```
 
-Sistem mempertahankan dua folder periode terbaru. Folder periode yang lebih lama otomatis dipindahkan ke Trash, bukan dihapus permanen. Folder lain yang namanya tidak mengikuti pola periode tidak disentuh.
+Apps Script mempertahankan dua folder periode terbaru. Folder periode yang lebih lama otomatis dipindahkan ke Trash, bukan dihapus permanen. Folder lain yang namanya tidak mengikuti pola periode tidak disentuh.
 
-Cleanup otomatis dijalankan satu kali sehari selama aplikasi Railway aktif. Cleanup manual:
+Cleanup berjalan setiap upload dan melalui trigger harian Apps Script. Cleanup manual dari Railway:
 
 ```text
 GET https://DOMAIN-RAILWAY-ANDA/api/cleanup-drive-photos?token=SETUP_TOKEN
 ```
 
-Respons cleanup berisi periode yang dipertahankan, folder yang dipindahkan ke Trash, serta jumlah file/folder terdampak.
+Respons cleanup berisi periode yang dipertahankan, folder yang dipindahkan ke Trash, serta jumlah file/folder terdampak. Secret hanya dikirim server Railway ke Apps Script dan tidak pernah diberikan ke browser pengguna.
 
 ## Setup Header
 

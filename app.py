@@ -1,8 +1,8 @@
 import json
 import os
-import io
-import re
-import threading
+import base64
+import urllib.error
+import urllib.request
 from collections import Counter
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -10,23 +10,14 @@ from zoneinfo import ZoneInfo
 import gspread
 from flask import Flask, jsonify, render_template, request
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseUpload
-from apscheduler.schedulers.background import BackgroundScheduler
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 
 app = Flask(__name__)
 MASTER_SHEET, LOG_SHEET, ROLE_SHEET, DASHBOARD_SHEET = "MASTER_ASET", "LOG_OPNAME", "ROLE", "DASHBOARD"
 TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Jakarta")
-DRIVE_PHOTO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_PHOTO_FOLDER_ID", "").strip()
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 AUTH_MAX_AGE = 12 * 60 * 60
-PERIOD_FOLDER_PATTERN = re.compile(r"^(\d{4})-(Jan-Jun|Jul-Des)$")
-cleanup_lock = threading.Lock()
-scheduler_lock = threading.Lock()
-scheduler_started = False
 
 VALID_ROLES = {"SUPER ADMIN", "SUPER ADMIN, PIC ASET", "PIC ASET"}
 PIC_ROLES = {"SUPER ADMIN, PIC ASET", "PIC ASET"}
@@ -70,21 +61,6 @@ def index():
 @app.get("/healthz")
 def healthz():
     return jsonify({"status": "ok"})
-
-
-@app.before_request
-def ensure_cleanup_scheduler():
-    global scheduler_started
-    if scheduler_started or os.getenv("DISABLE_SCHEDULED_CLEANUP", "").lower() == "true":
-        return
-    with scheduler_lock:
-        if scheduler_started:
-            return
-        scheduler = BackgroundScheduler(timezone=TIMEZONE, daemon=True)
-        scheduler.add_job(run_scheduled_cleanup, "interval", days=1, id="drive-photo-cleanup", replace_existing=True)
-        scheduler.start()
-        app.extensions["cleanup_scheduler"] = scheduler
-        scheduler_started = True
 
 
 @app.get("/api/users")
@@ -205,7 +181,7 @@ def upload_documentation():
     file = request.files.get("photo")
     asset_code = normalize(request.form.get("assetCode"))
     if not file or not file.filename:
-        raise AppError("Foto dokumentasi wajib dipilih.")
+        return jsonify({"success": True, "url": "", "message": "Tidak ada foto yang diunggah."})
     if file.mimetype not in ALLOWED_IMAGE_TYPES:
         raise AppError("Format foto harus JPG, PNG, atau WEBP.")
     if not asset_code:
@@ -217,30 +193,14 @@ def upload_documentation():
         raise AppError("Ukuran foto maksimal 10 MB.")
     extension = os.path.splitext(file.filename)[1].lower() or ".jpg"
     name = f"{asset_code}_{datetime.now(ZoneInfo(TIMEZONE)).strftime('%Y%m%d_%H%M%S')}_{normalize(identity['userId'])}{extension}"
-    try:
-        service = get_drive_service()
-        validate_drive_photo_folder(service)
-        period_folder = get_or_create_period_folder(service, current_period_folder_name())
-        media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.mimetype, resumable=False)
-        result = service.files().create(
-            body={"name": name, "parents": [period_folder["id"]]},
-            media_body=media,
-            fields="id,webViewLink",
-            supportsAllDrives=True,
-        ).execute()
-        cleanup_warning = ""
-        try:
-            cleanup_result = cleanupDrivePhotos(service)
-        except Exception as cleanup_error:
-            app.logger.exception(cleanup_error)
-            cleanup_result = None
-            cleanup_warning = "Foto berhasil diunggah, tetapi housekeeping Drive belum berhasil."
-        return jsonify({"success": True, "url": result.get("webViewLink") or f"https://drive.google.com/file/d/{result['id']}/view", "period": period_folder["name"], "cleanup": cleanup_result, "warning": cleanup_warning})
-    except AppError:
-        raise
-    except Exception as exc:
-        app.logger.exception(exc)
-        raise AppError("Foto gagal diunggah. Pastikan service account memiliki akses Editor ke folder Drive.", 503) from exc
+    result = call_photo_upload_script({
+        "action": "upload",
+        "fileName": name,
+        "mimeType": file.mimetype,
+        "base64Data": base64.b64encode(file.read()).decode("ascii"),
+        "assetCode": asset_code,
+    })
+    return jsonify({"success": True, **result})
 
 
 @app.get("/api/cleanup-drive-photos")
@@ -248,24 +208,22 @@ def cleanup_drive_photos_endpoint():
     expected_token = os.getenv("SETUP_TOKEN", "")
     if not expected_token or request.args.get("token", "") != expected_token:
         raise AppError("Setup token tidak valid.", 403)
-    return jsonify({"success": True, **cleanupDrivePhotos()})
+    return jsonify({"success": True, **call_photo_upload_script({"action": "cleanup"})})
 
 
-@app.get("/api/test-drive-access")
-def test_drive_access_endpoint():
+@app.get("/api/test-photo-upload")
+def test_photo_upload_endpoint():
     expected_token = os.getenv("SETUP_TOKEN", "")
     if not expected_token or request.args.get("token", "") != expected_token:
         raise AppError("Setup token tidak valid.", 403)
-    service = get_drive_service()
-    folder = validate_drive_photo_folder(service)
-    period = get_or_create_period_folder(service, current_period_folder_name())
-    return jsonify({
-        "success": True,
-        "serviceAccountEmail": get_service_account_email(),
-        "rootFolder": {"id": folder["id"], "name": folder.get("name")},
-        "currentPeriodFolder": period,
-        "message": "Service account dapat membaca dan membuat subfolder pada folder foto.",
+    probe_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    result = call_photo_upload_script({
+        "action": "test",
+        "fileName": f"railway-upload-test-{datetime.now().strftime('%Y%m%d%H%M%S')}.png",
+        "mimeType": "image/png",
+        "base64Data": probe_png,
     })
+    return jsonify({"success": True, **result})
 
 
 @app.post("/api/setup")
@@ -431,118 +389,43 @@ def get_google_credentials():
         raise AppError("GOOGLE_SERVICE_ACCOUNT_JSON belum dikonfigurasi.", 503)
     try:
         info = json.loads(credentials_json)
-        return Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+        return Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/spreadsheets"])
     except (json.JSONDecodeError, ValueError, KeyError) as exc:
         raise AppError("Kredensial service account tidak valid.", 503) from exc
 
 
-def get_service_account_email():
-    credentials_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+def call_photo_upload_script(payload):
+    script_url = os.getenv("PHOTO_UPLOAD_SCRIPT_URL", "").strip()
+    secret = os.getenv("PHOTO_UPLOAD_SECRET", "").strip()
+    if not script_url:
+        raise AppError("PHOTO_UPLOAD_SCRIPT_URL belum dikonfigurasi di Railway.", 503)
+    if not secret:
+        raise AppError("PHOTO_UPLOAD_SECRET belum dikonfigurasi di Railway.", 503)
+    request_payload = {**payload, "secret": secret}
+    relay_request = urllib.request.Request(
+        script_url,
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        return json.loads(credentials_json).get("client_email", "")
-    except json.JSONDecodeError:
-        return ""
-
-
-def get_drive_service():
-    if not DRIVE_PHOTO_FOLDER_ID:
-        raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID belum dikonfigurasi.", 503)
-    return build("drive", "v3", credentials=get_google_credentials(), cache_discovery=False)
-
-
-def validate_drive_photo_folder(service):
-    if not DRIVE_PHOTO_FOLDER_ID:
-        raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID belum dikonfigurasi.", 503)
+        with urllib.request.urlopen(relay_request, timeout=45) as response:
+            raw_response = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise AppError(f"Apps Script upload relay mengembalikan HTTP {exc.code}. Detail: {detail[:500]}", 503) from exc
+    except urllib.error.URLError as exc:
+        raise AppError(f"Apps Script upload relay tidak dapat dihubungi. Detail: {clean(exc.reason)}", 503) from exc
+    except TimeoutError as exc:
+        raise AppError("Apps Script upload relay timeout. Silakan coba kembali.", 504) from exc
     try:
-        folder = service.files().get(fileId=DRIVE_PHOTO_FOLDER_ID, fields="id,name,mimeType,trashed,capabilities(canAddChildren)", supportsAllDrives=True).execute()
-    except HttpError as exc:
-        reason = drive_http_error_reason(exc)
-        raise AppError(f"Service account {get_service_account_email() or '-'} tidak dapat mengakses folder foto Drive. Detail: {reason}", 503) from exc
-    except Exception as exc:
-        raise AppError(f"Service account {get_service_account_email() or '-'} tidak dapat mengakses folder foto Drive. Detail: {clean(exc)}", 503) from exc
-    if folder.get("mimeType") != "application/vnd.google-apps.folder" or folder.get("trashed"):
-        raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID bukan folder aktif.", 503)
-    if folder.get("capabilities") and not folder["capabilities"].get("canAddChildren", False):
-        raise AppError("Service account tidak memiliki izin menambah foto ke folder Drive.", 503)
-    return folder
-
-
-def drive_http_error_reason(error):
-    try:
-        payload = json.loads(error.content.decode("utf-8"))
-        return payload.get("error", {}).get("message", clean(error))
-    except Exception:
-        return clean(error)
-
-
-def current_period_folder_name(now=None):
-    now = now or datetime.now(ZoneInfo(TIMEZONE))
-    return f"{now.year}-{'Jan-Jun' if now.month <= 6 else 'Jul-Des'}"
-
-
-def period_sort_key(name):
-    match = PERIOD_FOLDER_PATTERN.fullmatch(clean(name))
-    if not match:
-        return None
-    return int(match.group(1)) * 2 + (1 if match.group(2) == "Jul-Des" else 0)
-
-
-def list_drive_items(service, query, fields="nextPageToken,files(id,name,mimeType,trashed)"):
-    items, page_token = [], None
-    while True:
-        response = service.files().list(q=query, fields=fields, pageToken=page_token, supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        items.extend(response.get("files", []))
-        page_token = response.get("nextPageToken")
-        if not page_token:
-            return items
-
-
-def get_or_create_period_folder(service, period_name):
-    query = f"'{DRIVE_PHOTO_FOLDER_ID}' in parents and name = '{period_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    folders = list_drive_items(service, query)
-    if folders:
-        return folders[0]
-    return service.files().create(body={"name": period_name, "mimeType": "application/vnd.google-apps.folder", "parents": [DRIVE_PHOTO_FOLDER_ID]}, fields="id,name", supportsAllDrives=True).execute()
-
-
-def count_drive_descendants(service, folder_id):
-    children = list_drive_items(service, f"'{folder_id}' in parents and trashed = false")
-    files, folders = 0, 0
-    for item in children:
-        if item.get("mimeType") == "application/vnd.google-apps.folder":
-            nested_files, nested_folders = count_drive_descendants(service, item["id"])
-            files += nested_files
-            folders += nested_folders + 1
-        else:
-            files += 1
-    return files, folders
-
-
-def cleanupDrivePhotos(service=None):
-    with cleanup_lock:
-        service = service or get_drive_service()
-        validate_drive_photo_folder(service)
-        folders = list_drive_items(service, f"'{DRIVE_PHOTO_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
-        period_folders = [(period_sort_key(folder["name"]), folder) for folder in folders if period_sort_key(folder["name"]) is not None]
-        period_folders.sort(key=lambda item: item[0], reverse=True)
-        kept = [folder["name"] for _, folder in period_folders[:2]]
-        trashed, affected_files, affected_folders = [], 0, 0
-        for _, folder in period_folders[2:]:
-            nested_files, nested_folders = count_drive_descendants(service, folder["id"])
-            affected_files += nested_files
-            affected_folders += nested_folders
-            service.files().update(fileId=folder["id"], body={"trashed": True}, fields="id,trashed", supportsAllDrives=True).execute()
-            trashed.append(folder["name"])
-            affected_folders += 1
-        return {"keptPeriods": kept, "trashedFolders": trashed, "affectedFiles": affected_files, "affectedFolders": affected_folders, "affectedItems": affected_files + affected_folders}
-
-
-def run_scheduled_cleanup():
-    try:
-        result = cleanupDrivePhotos()
-        app.logger.info("Scheduled Drive photo cleanup: %s", result)
-    except Exception:
-        app.logger.exception("Scheduled Drive photo cleanup failed")
+        result = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise AppError(f"Respons Apps Script bukan JSON yang valid. Detail: {raw_response[:300]}", 503) from exc
+    if not result.get("success"):
+        raise AppError(f"Upload foto melalui Apps Script gagal. Detail: {clean(result.get('message')) or 'Tidak ada detail error.'}", 503)
+    result.pop("success", None)
+    return result
 
 
 def get_worksheet(name):
