@@ -78,6 +78,16 @@ https://drive.google.com/drive/folders/1FJKbL7ZniWiR1vHRzKnC7_v1vaKWK5wv
 
 Foto dokumentasi wajib dipilih saat opname, dengan format JPG/PNG/WEBP dan ukuran maksimal 10 MB.
 
+Membuat folder menjadi **Anyone with the link** tidak memberikan izin upload kepada Service Account. Buka file JSON Service Account, salin nilai `client_email`, lalu bagikan folder Drive langsung ke email tersebut sebagai **Editor**.
+
+Tes akses Drive setelah deploy:
+
+```text
+GET https://DOMAIN-RAILWAY-ANDA/api/test-drive-access?token=SETUP_TOKEN
+```
+
+Endpoint tersebut menampilkan email Service Account yang aktif dan mencoba membuat subfolder periode berjalan.
+
 ## Auto Housekeeping Foto Drive
 
 Foto selalu disimpan pada subfolder periode berjalan di bawah `GOOGLE_DRIVE_PHOTO_FOLDER_ID`:

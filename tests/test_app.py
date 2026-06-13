@@ -160,6 +160,23 @@ class AppTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["trashedFolders"], ["2025-Jul-Des"])
 
+    @patch("app.get_service_account_email", return_value="railway@example.iam.gserviceaccount.com")
+    @patch("app.get_or_create_period_folder", return_value={"id": "PERIOD-ID", "name": "2026-Jan-Jun"})
+    @patch("app.validate_drive_photo_folder", return_value={"id": "ROOT-FOLDER", "name": "Dokumentasi"})
+    @patch("app.get_drive_service")
+    def test_drive_access_admin_endpoint(self, get_drive_service, validate_folder, get_period_folder, service_email):
+        os.environ["SETUP_TOKEN"] = "setup-secret"
+        response = self.client.get("/api/test-drive-access?token=setup-secret")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["serviceAccountEmail"], "railway@example.iam.gserviceaccount.com")
+        self.assertEqual(response.json["rootFolder"]["id"], "ROOT-FOLDER")
+        self.assertEqual(response.json["currentPeriodFolder"]["id"], "PERIOD-ID")
+
+    def test_unknown_endpoint_returns_clean_json_404(self):
+        response = self.client.get("/not-a-real-endpoint")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json["path"], "/not-a-real-endpoint")
+
     def test_period_folder_names(self):
         jakarta = application.ZoneInfo(application.TIMEZONE)
         self.assertEqual(application.current_period_folder_name(application.datetime(2026, 1, 1, tzinfo=jakarta)), "2026-Jan-Jun")

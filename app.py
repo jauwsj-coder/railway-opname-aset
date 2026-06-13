@@ -11,6 +11,7 @@ import gspread
 from flask import Flask, jsonify, render_template, request
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 from apscheduler.schedulers.background import BackgroundScheduler
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -54,6 +55,11 @@ def handle_app_error(error):
 def handle_unexpected_error(error):
     app.logger.exception(error)
     return jsonify({"success": False, "message": "Terjadi kesalahan pada server."}), 500
+
+
+@app.errorhandler(404)
+def handle_not_found(error):
+    return jsonify({"success": False, "message": "Endpoint tidak ditemukan.", "path": request.path}), 404
 
 
 @app.get("/")
@@ -245,6 +251,23 @@ def cleanup_drive_photos_endpoint():
     return jsonify({"success": True, **cleanupDrivePhotos()})
 
 
+@app.get("/api/test-drive-access")
+def test_drive_access_endpoint():
+    expected_token = os.getenv("SETUP_TOKEN", "")
+    if not expected_token or request.args.get("token", "") != expected_token:
+        raise AppError("Setup token tidak valid.", 403)
+    service = get_drive_service()
+    folder = validate_drive_photo_folder(service)
+    period = get_or_create_period_folder(service, current_period_folder_name())
+    return jsonify({
+        "success": True,
+        "serviceAccountEmail": get_service_account_email(),
+        "rootFolder": {"id": folder["id"], "name": folder.get("name")},
+        "currentPeriodFolder": period,
+        "message": "Service account dapat membaca dan membuat subfolder pada folder foto.",
+    })
+
+
 @app.post("/api/setup")
 def setup_sheets():
     if request.headers.get("X-Setup-Token", "") != os.getenv("SETUP_TOKEN", "") or not os.getenv("SETUP_TOKEN"):
@@ -413,6 +436,14 @@ def get_google_credentials():
         raise AppError("Kredensial service account tidak valid.", 503) from exc
 
 
+def get_service_account_email():
+    credentials_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    try:
+        return json.loads(credentials_json).get("client_email", "")
+    except json.JSONDecodeError:
+        return ""
+
+
 def get_drive_service():
     if not DRIVE_PHOTO_FOLDER_ID:
         raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID belum dikonfigurasi.", 503)
@@ -424,13 +455,24 @@ def validate_drive_photo_folder(service):
         raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID belum dikonfigurasi.", 503)
     try:
         folder = service.files().get(fileId=DRIVE_PHOTO_FOLDER_ID, fields="id,name,mimeType,trashed,capabilities(canAddChildren)", supportsAllDrives=True).execute()
+    except HttpError as exc:
+        reason = drive_http_error_reason(exc)
+        raise AppError(f"Service account {get_service_account_email() or '-'} tidak dapat mengakses folder foto Drive. Detail: {reason}", 503) from exc
     except Exception as exc:
-        raise AppError("Service account tidak memiliki akses ke folder foto Google Drive.", 503) from exc
+        raise AppError(f"Service account {get_service_account_email() or '-'} tidak dapat mengakses folder foto Drive. Detail: {clean(exc)}", 503) from exc
     if folder.get("mimeType") != "application/vnd.google-apps.folder" or folder.get("trashed"):
         raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID bukan folder aktif.", 503)
     if folder.get("capabilities") and not folder["capabilities"].get("canAddChildren", False):
         raise AppError("Service account tidak memiliki izin menambah foto ke folder Drive.", 503)
     return folder
+
+
+def drive_http_error_reason(error):
+    try:
+        payload = json.loads(error.content.decode("utf-8"))
+        return payload.get("error", {}).get("message", clean(error))
+    except Exception:
+        return clean(error)
 
 
 def current_period_folder_name(now=None):
