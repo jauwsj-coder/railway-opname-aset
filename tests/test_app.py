@@ -1,6 +1,7 @@
 import os
+import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import app as application
 
@@ -35,6 +36,8 @@ class FakeSpreadsheet:
 class AppTest(unittest.TestCase):
     def setUp(self):
         os.environ["APP_SECRET_KEY"] = "test-secret"
+        os.environ["DISABLE_SCHEDULED_CLEANUP"] = "true"
+        os.environ["GOOGLE_DRIVE_PHOTO_FOLDER_ID"] = "ROOT-FOLDER"
         self.master = FakeWorksheet("MASTER_ASET", [application.MASTER_HEADERS, ["AST-0001", "LAPTOP", "LT-01", "BUDI", "DONE", "OK", "KANTOR", "AREA A", "", "", "", ""]])
         self.log = FakeWorksheet("LOG_OPNAME", [application.LOG_HEADERS])
         self.role = FakeWorksheet("ROLE", [application.ROLE_HEADERS, ["ADMIN", "1001", " SUPER ADMIN ", " all "], ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET", "ALL"], ["PIC AREA", "1003", "PIC ASET", "AREA B"], ["INVALID", "1004", "ADMIN", "ALL"]])
@@ -112,6 +115,55 @@ class AppTest(unittest.TestCase):
         application.append_record(sheet, "LOG_OPNAME", application.LOG_HEADERS, record)
         self.assertEqual(sheet.appended[0][0], "TYPE-VALUE")
         self.assertEqual(sheet.appended[0][1], "NOMOR ASSET-VALUE")
+
+    @patch("app.cleanupDrivePhotos", return_value={"keptPeriods": ["2026-Jan-Jun"], "trashedFolders": [], "affectedFiles": 0, "affectedFolders": 0, "affectedItems": 0})
+    @patch("app.get_or_create_period_folder", return_value={"id": "PERIOD-ID", "name": "2026-Jan-Jun"})
+    @patch("app.validate_drive_photo_folder")
+    @patch("app.get_drive_service")
+    @patch("app.get_worksheet")
+    def test_upload_documentation(self, get_worksheet, get_drive_service, validate_folder, get_period_folder, cleanup):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        execute = MagicMock(return_value={"id": "FILE-ID", "webViewLink": "https://drive.google.com/file/d/FILE-ID/view"})
+        get_drive_service.return_value.files.return_value.create.return_value.execute = execute
+        response = self.client.post(
+            "/api/upload-documentation",
+            headers=headers,
+            data={"assetCode": "AST-0001", "photo": (io.BytesIO(b"photo"), "asset.jpg", "image/jpeg")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("drive.google.com", response.json["url"])
+
+    @patch("app.validate_drive_photo_folder")
+    @patch("app.count_drive_descendants", return_value=(4, 1))
+    @patch("app.list_drive_items")
+    def test_cleanup_drive_keeps_two_latest_periods(self, list_items, count_descendants, validate_folder):
+        list_items.return_value = [
+            {"id": "A", "name": "2025-Jan-Jun", "mimeType": "application/vnd.google-apps.folder"},
+            {"id": "B", "name": "2025-Jul-Des", "mimeType": "application/vnd.google-apps.folder"},
+            {"id": "C", "name": "2026-Jan-Jun", "mimeType": "application/vnd.google-apps.folder"},
+            {"id": "X", "name": "LAINNYA", "mimeType": "application/vnd.google-apps.folder"},
+        ]
+        service = MagicMock()
+        result = application.cleanupDrivePhotos(service)
+        self.assertEqual(result["keptPeriods"], ["2026-Jan-Jun", "2025-Jul-Des"])
+        self.assertEqual(result["trashedFolders"], ["2025-Jan-Jun"])
+        self.assertEqual(result["affectedFiles"], 4)
+        self.assertEqual(result["affectedFolders"], 2)
+        service.files.return_value.update.assert_called_once()
+
+    @patch("app.cleanupDrivePhotos", return_value={"keptPeriods": ["2026-Jul-Des", "2026-Jan-Jun"], "trashedFolders": ["2025-Jul-Des"], "affectedFiles": 3, "affectedFolders": 1, "affectedItems": 4})
+    def test_cleanup_admin_endpoint(self, cleanup):
+        os.environ["SETUP_TOKEN"] = "setup-secret"
+        response = self.client.get("/api/cleanup-drive-photos?token=setup-secret")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["trashedFolders"], ["2025-Jul-Des"])
+
+    def test_period_folder_names(self):
+        jakarta = application.ZoneInfo(application.TIMEZONE)
+        self.assertEqual(application.current_period_folder_name(application.datetime(2026, 1, 1, tzinfo=jakarta)), "2026-Jan-Jun")
+        self.assertEqual(application.current_period_folder_name(application.datetime(2026, 12, 1, tzinfo=jakarta)), "2026-Jul-Des")
 
     @patch("app.get_worksheet")
     def test_total_assets_survives_incomplete_log_headers(self, get_worksheet):

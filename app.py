@@ -1,5 +1,8 @@
 import json
 import os
+import io
+import re
+import threading
 from collections import Counter
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -7,21 +10,30 @@ from zoneinfo import ZoneInfo
 import gspread
 from flask import Flask, jsonify, render_template, request
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from apscheduler.schedulers.background import BackgroundScheduler
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 
 app = Flask(__name__)
 MASTER_SHEET, LOG_SHEET, ROLE_SHEET, DASHBOARD_SHEET = "MASTER_ASET", "LOG_OPNAME", "ROLE", "DASHBOARD"
 TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Jakarta")
+DRIVE_PHOTO_FOLDER_ID = os.getenv("GOOGLE_DRIVE_PHOTO_FOLDER_ID", "").strip()
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 AUTH_MAX_AGE = 12 * 60 * 60
+PERIOD_FOLDER_PATTERN = re.compile(r"^(\d{4})-(Jan-Jun|Jul-Des)$")
+cleanup_lock = threading.Lock()
+scheduler_lock = threading.Lock()
+scheduler_started = False
 
 VALID_ROLES = {"SUPER ADMIN", "SUPER ADMIN, PIC ASET", "PIC ASET"}
 PIC_ROLES = {"SUPER ADMIN, PIC ASET", "PIC ASET"}
 GOOD_CONDITIONS = {"OK", "BAIK", "GOOD"}
 DAMAGED_CONDITIONS = {"RUSAK", "BROKEN", "MAINTENANCE", "NOT OK"}
 
-MASTER_HEADERS = ["NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR"]
-LOG_HEADERS = ["TIMESTAMP", "NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR", "NAMA PETUGAS", "ID USER", "ROLE"]
+MASTER_HEADERS = ["NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR", "DOKUMENTASI TERAKHIR"]
+LOG_HEADERS = ["TIMESTAMP", "NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR", "DOKUMENTASI TERAKHIR", "NAMA PETUGAS", "ID USER", "ROLE"]
 ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE", "AREA"]
 DASHBOARD_HEADERS = ["METRIK", "NILAI", "DIPERBARUI"]
 SCORE_HEADERS = ["ROLE", "JUMLAH OPNAME", "PERSENTASE"]
@@ -52,6 +64,21 @@ def index():
 @app.get("/healthz")
 def healthz():
     return jsonify({"status": "ok"})
+
+
+@app.before_request
+def ensure_cleanup_scheduler():
+    global scheduler_started
+    if scheduler_started or os.getenv("DISABLE_SCHEDULED_CLEANUP", "").lower() == "true":
+        return
+    with scheduler_lock:
+        if scheduler_started:
+            return
+        scheduler = BackgroundScheduler(timezone=TIMEZONE, daemon=True)
+        scheduler.add_job(run_scheduled_cleanup, "interval", days=1, id="drive-photo-cleanup", replace_existing=True)
+        scheduler.start()
+        app.extensions["cleanup_scheduler"] = scheduler
+        scheduler_started = True
 
 
 @app.get("/api/users")
@@ -114,7 +141,7 @@ def submit_opname():
     operator = require_user()
     payload = request.get_json(silent=True) or {}
     code, condition = normalize(payload.get("assetCode")), normalize(payload.get("condition"))
-    notes = clean(payload.get("notes"))
+    notes, documentation = clean(payload.get("notes")), clean(payload.get("documentation"))
     if not code:
         raise AppError("NOMOR ASSET wajib diisi.")
     if condition not in GOOD_CONDITIONS | DAMAGED_CONDITIONS:
@@ -144,7 +171,7 @@ def submit_opname():
         "KONDISI": condition, "LOKASI DETAIL": asset["LOKASI DETAIL"], "AREA": asset["AREA"],
         "KONDISI TERAKHIR": condition, "STATUS TERAKHIR": status, "TANGGAL OPNAME TERAKHIR": date_value,
         "KETERANGAN TERAKHIR": notes, "NAMA PETUGAS": operator["name"], "ID USER": operator["userId"],
-        "ROLE": operator["role"],
+        "ROLE": operator["role"], "DOKUMENTASI TERAKHIR": documentation,
     })
 
     master.batch_update([
@@ -154,6 +181,7 @@ def submit_opname():
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["STATUS TERAKHIR"]), "values": [[status]]},
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["TANGGAL OPNAME TERAKHIR"]), "values": [[date_value]]},
         {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["KETERANGAN TERAKHIR"]), "values": [[notes]]},
+        {"range": gspread.utils.rowcol_to_a1(asset_row, header_map["DOKUMENTASI TERAKHIR"]), "values": [[documentation]]},
     ], value_input_option="USER_ENTERED")
 
     summary, score, warnings = build_dashboard(operator)
@@ -163,6 +191,58 @@ def submit_opname():
     except AppError as error:
         warnings.append(f"Opname tersimpan, tetapi sheet DASHBOARD belum diperbarui: {error.message}")
     return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score, "warnings": warnings})
+
+
+@app.post("/api/upload-documentation")
+def upload_documentation():
+    identity = require_user()
+    file = request.files.get("photo")
+    asset_code = normalize(request.form.get("assetCode"))
+    if not file or not file.filename:
+        raise AppError("Foto dokumentasi wajib dipilih.")
+    if file.mimetype not in ALLOWED_IMAGE_TYPES:
+        raise AppError("Format foto harus JPG, PNG, atau WEBP.")
+    if not asset_code:
+        raise AppError("NOMOR ASSET wajib diisi sebelum upload.")
+    file.stream.seek(0, os.SEEK_END)
+    size = file.stream.tell()
+    file.stream.seek(0)
+    if size > 10 * 1024 * 1024:
+        raise AppError("Ukuran foto maksimal 10 MB.")
+    extension = os.path.splitext(file.filename)[1].lower() or ".jpg"
+    name = f"{asset_code}_{datetime.now(ZoneInfo(TIMEZONE)).strftime('%Y%m%d_%H%M%S')}_{normalize(identity['userId'])}{extension}"
+    try:
+        service = get_drive_service()
+        validate_drive_photo_folder(service)
+        period_folder = get_or_create_period_folder(service, current_period_folder_name())
+        media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.mimetype, resumable=False)
+        result = service.files().create(
+            body={"name": name, "parents": [period_folder["id"]]},
+            media_body=media,
+            fields="id,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+        cleanup_warning = ""
+        try:
+            cleanup_result = cleanupDrivePhotos(service)
+        except Exception as cleanup_error:
+            app.logger.exception(cleanup_error)
+            cleanup_result = None
+            cleanup_warning = "Foto berhasil diunggah, tetapi housekeeping Drive belum berhasil."
+        return jsonify({"success": True, "url": result.get("webViewLink") or f"https://drive.google.com/file/d/{result['id']}/view", "period": period_folder["name"], "cleanup": cleanup_result, "warning": cleanup_warning})
+    except AppError:
+        raise
+    except Exception as exc:
+        app.logger.exception(exc)
+        raise AppError("Foto gagal diunggah. Pastikan service account memiliki akses Editor ke folder Drive.", 503) from exc
+
+
+@app.get("/api/cleanup-drive-photos")
+def cleanup_drive_photos_endpoint():
+    expected_token = os.getenv("SETUP_TOKEN", "")
+    if not expected_token or request.args.get("token", "") != expected_token:
+        raise AppError("Setup token tidak valid.", 403)
+    return jsonify({"success": True, **cleanupDrivePhotos()})
 
 
 @app.post("/api/setup")
@@ -311,9 +391,7 @@ def get_spreadsheet():
     if not spreadsheet_id or not credentials_json:
         raise AppError("Konfigurasi Google Sheets belum lengkap.", 503)
     try:
-        info = json.loads(credentials_json)
-        credentials = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
-        return gspread.authorize(credentials).open_by_key(spreadsheet_id)
+        return gspread.authorize(get_google_credentials()).open_by_key(spreadsheet_id)
     except json.JSONDecodeError as exc:
         raise AppError("GOOGLE_SERVICE_ACCOUNT_JSON bukan JSON yang valid.", 503) from exc
     except gspread.SpreadsheetNotFound as exc:
@@ -322,6 +400,107 @@ def get_spreadsheet():
         raise AppError("Google Sheet tidak bisa dibaca. Periksa API dan akses service account.", 503) from exc
     except (ValueError, KeyError) as exc:
         raise AppError("Kredensial service account tidak valid.", 503) from exc
+
+
+def get_google_credentials():
+    credentials_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not credentials_json:
+        raise AppError("GOOGLE_SERVICE_ACCOUNT_JSON belum dikonfigurasi.", 503)
+    try:
+        info = json.loads(credentials_json)
+        return Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        raise AppError("Kredensial service account tidak valid.", 503) from exc
+
+
+def get_drive_service():
+    if not DRIVE_PHOTO_FOLDER_ID:
+        raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID belum dikonfigurasi.", 503)
+    return build("drive", "v3", credentials=get_google_credentials(), cache_discovery=False)
+
+
+def validate_drive_photo_folder(service):
+    if not DRIVE_PHOTO_FOLDER_ID:
+        raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID belum dikonfigurasi.", 503)
+    try:
+        folder = service.files().get(fileId=DRIVE_PHOTO_FOLDER_ID, fields="id,name,mimeType,trashed,capabilities(canAddChildren)", supportsAllDrives=True).execute()
+    except Exception as exc:
+        raise AppError("Service account tidak memiliki akses ke folder foto Google Drive.", 503) from exc
+    if folder.get("mimeType") != "application/vnd.google-apps.folder" or folder.get("trashed"):
+        raise AppError("GOOGLE_DRIVE_PHOTO_FOLDER_ID bukan folder aktif.", 503)
+    if folder.get("capabilities") and not folder["capabilities"].get("canAddChildren", False):
+        raise AppError("Service account tidak memiliki izin menambah foto ke folder Drive.", 503)
+    return folder
+
+
+def current_period_folder_name(now=None):
+    now = now or datetime.now(ZoneInfo(TIMEZONE))
+    return f"{now.year}-{'Jan-Jun' if now.month <= 6 else 'Jul-Des'}"
+
+
+def period_sort_key(name):
+    match = PERIOD_FOLDER_PATTERN.fullmatch(clean(name))
+    if not match:
+        return None
+    return int(match.group(1)) * 2 + (1 if match.group(2) == "Jul-Des" else 0)
+
+
+def list_drive_items(service, query, fields="nextPageToken,files(id,name,mimeType,trashed)"):
+    items, page_token = [], None
+    while True:
+        response = service.files().list(q=query, fields=fields, pageToken=page_token, supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        items.extend(response.get("files", []))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            return items
+
+
+def get_or_create_period_folder(service, period_name):
+    query = f"'{DRIVE_PHOTO_FOLDER_ID}' in parents and name = '{period_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    folders = list_drive_items(service, query)
+    if folders:
+        return folders[0]
+    return service.files().create(body={"name": period_name, "mimeType": "application/vnd.google-apps.folder", "parents": [DRIVE_PHOTO_FOLDER_ID]}, fields="id,name", supportsAllDrives=True).execute()
+
+
+def count_drive_descendants(service, folder_id):
+    children = list_drive_items(service, f"'{folder_id}' in parents and trashed = false")
+    files, folders = 0, 0
+    for item in children:
+        if item.get("mimeType") == "application/vnd.google-apps.folder":
+            nested_files, nested_folders = count_drive_descendants(service, item["id"])
+            files += nested_files
+            folders += nested_folders + 1
+        else:
+            files += 1
+    return files, folders
+
+
+def cleanupDrivePhotos(service=None):
+    with cleanup_lock:
+        service = service or get_drive_service()
+        validate_drive_photo_folder(service)
+        folders = list_drive_items(service, f"'{DRIVE_PHOTO_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
+        period_folders = [(period_sort_key(folder["name"]), folder) for folder in folders if period_sort_key(folder["name"]) is not None]
+        period_folders.sort(key=lambda item: item[0], reverse=True)
+        kept = [folder["name"] for _, folder in period_folders[:2]]
+        trashed, affected_files, affected_folders = [], 0, 0
+        for _, folder in period_folders[2:]:
+            nested_files, nested_folders = count_drive_descendants(service, folder["id"])
+            affected_files += nested_files
+            affected_folders += nested_folders
+            service.files().update(fileId=folder["id"], body={"trashed": True}, fields="id,trashed", supportsAllDrives=True).execute()
+            trashed.append(folder["name"])
+            affected_folders += 1
+        return {"keptPeriods": kept, "trashedFolders": trashed, "affectedFiles": affected_files, "affectedFolders": affected_folders, "affectedItems": affected_files + affected_folders}
+
+
+def run_scheduled_cleanup():
+    try:
+        result = cleanupDrivePhotos()
+        app.logger.info("Scheduled Drive photo cleanup: %s", result)
+    except Exception:
+        app.logger.exception("Scheduled Drive photo cleanup failed")
 
 
 def get_worksheet(name):
@@ -394,11 +573,11 @@ def row_to_dict(headers, values):
 
 
 def serialize_asset(row):
-    return {"assetCode": clean(row["NOMOR ASSET"]), "type": clean(row["TYPE"]), "layoutNumber": clean(row["NO LAYOUT"]), "user": clean(row["USER"]), "opname": clean(row["OPNAME"]), "masterCondition": clean(row["KONDISI"]), "area": clean(row["AREA"]), "detailLocation": clean(row["LOKASI DETAIL"]), "lastCondition": clean(row["KONDISI TERAKHIR"]), "lastStatus": clean(row["STATUS TERAKHIR"]), "lastDate": clean(row["TANGGAL OPNAME TERAKHIR"]) or "-", "lastNotes": clean(row["KETERANGAN TERAKHIR"])}
+    return {"assetCode": clean(row["NOMOR ASSET"]), "type": clean(row["TYPE"]), "layoutNumber": clean(row["NO LAYOUT"]), "user": clean(row["USER"]), "opname": clean(row["OPNAME"]), "masterCondition": clean(row["KONDISI"]), "area": clean(row["AREA"]), "detailLocation": clean(row["LOKASI DETAIL"]), "lastCondition": clean(row["KONDISI TERAKHIR"]), "lastStatus": clean(row["STATUS TERAKHIR"]), "lastDate": clean(row["TANGGAL OPNAME TERAKHIR"]) or "-", "lastNotes": clean(row["KETERANGAN TERAKHIR"]), "lastDocumentation": clean(row["DOKUMENTASI TERAKHIR"])}
 
 
 def serialize_log(row):
-    return {"timestamp": clean(row["TIMESTAMP"]) or "-", "condition": clean(row["KONDISI TERAKHIR"] or row["KONDISI"]), "status": clean(row["STATUS TERAKHIR"]), "opnameDate": clean(row["TANGGAL OPNAME TERAKHIR"]) or "-", "notes": clean(row["KETERANGAN TERAKHIR"]), "operator": clean(row["NAMA PETUGAS"]), "role": clean(row["ROLE"])}
+    return {"timestamp": clean(row["TIMESTAMP"]) or "-", "condition": clean(row["KONDISI TERAKHIR"] or row["KONDISI"]), "status": clean(row["STATUS TERAKHIR"]), "opnameDate": clean(row["TANGGAL OPNAME TERAKHIR"]) or "-", "notes": clean(row["KETERANGAN TERAKHIR"]), "documentation": clean(row["DOKUMENTASI TERAKHIR"]), "operator": clean(row["NAMA PETUGAS"]), "role": clean(row["ROLE"])}
 
 
 def now_text():

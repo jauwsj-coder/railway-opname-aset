@@ -20,13 +20,13 @@ Role valid: `SUPER ADMIN`, `SUPER ADMIN, PIC ASET`, dan `PIC ASET`.
 `MASTER_ASET`
 
 ```text
-NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR
+NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR | DOKUMENTASI TERAKHIR
 ```
 
 `LOG_OPNAME`
 
 ```text
-TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR | NAMA PETUGAS | ID USER | ROLE
+TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR | DOKUMENTASI TERAKHIR | NAMA PETUGAS | ID USER | ROLE
 ```
 
 `LOG_OPNAME` adalah sumber utama riwayat, status dashboard, kondisi terakhir, dan Score Card.
@@ -38,6 +38,7 @@ Saat submit berhasil:
 - `MASTER_ASET.OPNAME` menjadi `DONE`.
 - `MASTER_ASET.KONDISI` dan `KONDISI TERAKHIR` mengikuti kondisi opname terbaru.
 - `STATUS TERAKHIR` menjadi `SUDAH OPNAME JANUARI - JUNI` atau `SUDAH OPNAME JULI - DESEMBER` sesuai tanggal aktual.
+- Foto dokumentasi diunggah ke Google Drive dan URL disimpan pada `DOKUMENTASI TERAKHIR`.
 - Web kembali ke menu scan setelah penyimpanan berhasil.
 
 ## Perhitungan Dashboard
@@ -65,9 +66,36 @@ GOOGLE_SERVICE_ACCOUNT_JSON=seluruh JSON Service Account dalam satu baris
 SETUP_TOKEN=token rahasia
 APP_SECRET_KEY=rangkaian acak panjang
 APP_TIMEZONE=Asia/Jakarta
+GOOGLE_DRIVE_PHOTO_FOLDER_ID=1FJKbL7ZniWiR1vHRzKnC7_v1vaKWK5wv
 ```
 
 Service Account wajib dibagikan sebagai **Editor** pada Google Spreadsheet.
+Bagikan juga folder Google Drive dokumentasi sebagai **Editor** kepada email Service Account. Folder default:
+
+```text
+https://drive.google.com/drive/folders/1FJKbL7ZniWiR1vHRzKnC7_v1vaKWK5wv
+```
+
+Foto dokumentasi wajib dipilih saat opname, dengan format JPG/PNG/WEBP dan ukuran maksimal 10 MB.
+
+## Auto Housekeeping Foto Drive
+
+Foto selalu disimpan pada subfolder periode berjalan di bawah `GOOGLE_DRIVE_PHOTO_FOLDER_ID`:
+
+```text
+YYYY-Jan-Jun
+YYYY-Jul-Des
+```
+
+Sistem mempertahankan dua folder periode terbaru. Folder periode yang lebih lama otomatis dipindahkan ke Trash, bukan dihapus permanen. Folder lain yang namanya tidak mengikuti pola periode tidak disentuh.
+
+Cleanup otomatis dijalankan satu kali sehari selama aplikasi Railway aktif. Cleanup manual:
+
+```text
+GET https://DOMAIN-RAILWAY-ANDA/api/cleanup-drive-photos?token=SETUP_TOKEN
+```
+
+Respons cleanup berisi periode yang dipertahankan, folder yang dipindahkan ke Trash, serta jumlah file/folder terdampak.
 
 ## Setup Header
 
