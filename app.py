@@ -3,7 +3,6 @@ import os
 import base64
 import urllib.error
 import urllib.request
-from collections import Counter
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -26,9 +25,9 @@ DAMAGED_CONDITIONS = {"RUSAK", "BROKEN", "MAINTENANCE", "NOT OK"}
 
 MASTER_HEADERS = ["NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR", "DOKUMENTASI TERAKHIR"]
 LOG_HEADERS = ["TIMESTAMP", "NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR", "DOKUMENTASI TERAKHIR", "NAMA PETUGAS", "ID USER", "ROLE"]
-ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE", "AREA"]
+ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE", "AREA", "AREA SCORECARD"]
 DASHBOARD_HEADERS = ["METRIK", "NILAI", "DIPERBARUI"]
-SCORE_HEADERS = ["ROLE", "JUMLAH OPNAME", "PERSENTASE"]
+SCORE_HEADERS = ["NAMA PETUGAS", "ID USER", "ROLE", "AREA SCORECARD", "TOTAL ASSET", "SUDAH OPNAME", "BELUM OPNAME", "PROGRESS", "STATUS", "DOKUMENTASI ADA", "KETERANGAN ADA", "ASET BAIK", "ASET RUSAK"]
 
 
 class AppError(Exception):
@@ -85,16 +84,18 @@ def login():
 def dashboard():
     identity = require_user()
     start_date, end_date = parse_period(request.args.get("startDate"), request.args.get("endDate"))
-    summary, score, warnings = build_dashboard(identity, start_date, end_date)
-    return jsonify({"summary": summary, "scoreCard": score, "warnings": warnings, "scope": identity["area"]})
+    score_start, score_end, score_period = parse_score_period(request.args.get("scorePeriod"))
+    summary, score, warnings = build_dashboard(identity, start_date, end_date, score_start, score_end)
+    return jsonify({"summary": summary, "scoreCard": score, "warnings": warnings, "scope": identity["area"], "scorePeriod": score_period})
 
 
 @app.post("/api/dashboard/sync")
 def sync_dashboard():
     identity = require_user()
-    if identity["role"] not in {"SUPER ADMIN", "SUPER ADMIN, PIC ASET"} or identity["area"] != "ALL":
+    if identity["role"] not in {"SUPER ADMIN", "SUPER ADMIN, PIC ASET"} or not can_access_all(identity):
         raise AppError("Hanya SUPER ADMIN dengan AREA ALL yang dapat melakukan Sync Sheet.", 403)
-    summary, score, _ = build_dashboard(all_area_identity())
+    score_start, score_end, _ = parse_score_period(request.args.get("scorePeriod"))
+    summary, score, _ = build_dashboard(all_area_identity(), score_start_date=score_start, score_end_date=score_end)
     write_dashboard_sheet(summary, score)
     return jsonify({"success": True, "message": "Sheet DASHBOARD berhasil diperbarui."})
 
@@ -271,7 +272,7 @@ def validated_identity(row):
         raise AppError(f"ROLE tidak valid: {clean(row['ROLE']) or '-'}", 403)
     if not area:
         raise AppError(f"AREA kosong untuk user {clean(row['NAMA USER']) or '-'}.", 403)
-    return {"name": clean(row["NAMA USER"]), "userId": clean(row["ID USER"]), "role": role, "area": area}
+    return {"name": clean(row["NAMA USER"]), "userId": clean(row["ID USER"]), "role": role, "area": area, "areas": sorted(parse_areas(area))}
 
 
 def ensure_pic_has_assets(identity):
@@ -282,7 +283,7 @@ def ensure_pic_has_assets(identity):
         raise AppError(f"PIC ASET tidak memiliki aset sesuai AREA {identity['area']}.", 403)
 
 
-def build_dashboard(identity, start_date=None, end_date=None):
+def build_dashboard(identity, start_date=None, end_date=None, score_start_date=None, score_end_date=None):
     master_rows = get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS)
     blank_area_codes = [clean(row["NOMOR ASSET"]) for row in master_rows if normalize(row["NOMOR ASSET"]) and not normalize(row["AREA"])]
     if blank_area_codes:
@@ -304,11 +305,60 @@ def build_dashboard(identity, start_date=None, end_date=None):
     damaged = sum(1 for row in latest_by_asset.values() if log_condition(row) in DAMAGED_CONDITIONS)
     summary = {"total": len(assets), "completed": completed, "pending": max(len(assets) - completed, 0), "good": good, "damaged": damaged}
 
-    pic_logs = [row for row in scoped_logs if normalize(row["ROLE"]) in PIC_ROLES]
-    counts = Counter(normalize(row["ROLE"]) for row in pic_logs)
-    total_pic_logs = sum(counts.values())
-    score = [{"role": role, "count": count, "percentage": round(count * 100 / total_pic_logs, 2) if total_pic_logs else 0} for role, count in counts.most_common()]
+    score = build_score_card(identity, master_rows, score_start_date, score_end_date, warnings)
     return summary, score, warnings
+
+
+def build_score_card(viewer, master_rows, start_date=None, end_date=None, warnings=None):
+    warnings = warnings if warnings is not None else []
+    try:
+        role_rows = get_rows(get_worksheet(ROLE_SHEET), ROLE_HEADERS)
+    except AppError as error:
+        warnings.append(f"Score Card belum dapat dihitung: {error.message}")
+        return []
+    try:
+        all_logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize(row["NOMOR ASSET"]) and log_in_period(row, start_date, end_date)]
+    except AppError as error:
+        all_logs = []
+        if not any(error.message in warning for warning in warnings):
+            warnings.append(f"Score Card belum dapat dihitung dari LOG_OPNAME: {error.message}")
+
+    score = []
+    for role_row in role_rows:
+        role = normalize(role_row["ROLE"])
+        if role not in PIC_ROLES:
+            continue
+        score_area_value = clean(role_row["AREA SCORECARD"]) or clean(role_row["AREA"])
+        score_areas = parse_areas(score_area_value)
+        if not score_areas:
+            continue
+        if not can_view_score_areas(viewer, score_areas):
+            continue
+
+        asset_codes = {normalize(row["NOMOR ASSET"]) for row in master_rows if normalize(row["NOMOR ASSET"]) and area_in_scope(row["AREA"], score_areas)}
+        matching_logs = [row for row in all_logs if normalize(row["NOMOR ASSET"]) in asset_codes and area_in_scope(row["AREA"], score_areas)]
+        latest_by_asset = {}
+        for row in matching_logs:
+            latest_by_asset[normalize(row["NOMOR ASSET"])] = row
+
+        total, completed = len(asset_codes), len(latest_by_asset)
+        progress = round(completed * 100 / total, 2) if total else 0
+        score.append({
+            "name": clean(role_row["NAMA USER"]),
+            "userId": clean(role_row["ID USER"]),
+            "role": role,
+            "scoreAreas": score_area_value,
+            "total": total,
+            "completed": completed,
+            "pending": max(total - completed, 0),
+            "progress": progress,
+            "status": progress_status(progress),
+            "documentationCount": sum(1 for row in latest_by_asset.values() if clean(row["DOKUMENTASI TERAKHIR"])),
+            "notesCount": sum(1 for row in latest_by_asset.values() if clean(row["KETERANGAN TERAKHIR"])),
+            "good": sum(1 for row in latest_by_asset.values() if log_condition(row) in GOOD_CONDITIONS),
+            "damaged": sum(1 for row in latest_by_asset.values() if log_condition(row) in DAMAGED_CONDITIONS),
+        })
+    return sorted(score, key=lambda item: (-item["progress"], item["name"]))
 
 
 def parse_period(start_value, end_value):
@@ -320,6 +370,18 @@ def parse_period(start_value, end_value):
     if start_date and end_date and start_date > end_date:
         raise AppError("Tanggal awal tidak boleh lebih besar dari tanggal akhir.")
     return start_date, end_date
+
+
+def parse_score_period(value):
+    period = normalize(value) or "ALL"
+    if period == "ALL":
+        return None, None, "ALL"
+    year = datetime.now(ZoneInfo(TIMEZONE)).year
+    if period == "JAN-JUN":
+        return datetime(year, 1, 1, tzinfo=ZoneInfo(TIMEZONE)), datetime.combine(datetime(year, 6, 30).date(), time.max, ZoneInfo(TIMEZONE)), "JAN-JUN"
+    if period == "JUL-DES":
+        return datetime(year, 7, 1, tzinfo=ZoneInfo(TIMEZONE)), datetime.combine(datetime(year, 12, 31).date(), time.max, ZoneInfo(TIMEZONE)), "JUL-DES"
+    raise AppError("Periode Score Card tidak valid.")
 
 
 def log_in_period(row, start_date, end_date):
@@ -338,15 +400,42 @@ def log_condition(row):
 
 
 def can_access_all(identity):
-    return identity["area"] == "ALL"
+    return "ALL" in identity.get("areas", parse_areas(identity.get("area")))
 
 
 def all_area_identity():
-    return {"role": "SUPER ADMIN", "area": "ALL"}
+    return {"role": "SUPER ADMIN", "area": "ALL", "areas": ["ALL"]}
 
 
 def can_access_area(identity, asset_area):
-    return can_access_all(identity) or normalize(asset_area) == identity["area"]
+    return can_access_all(identity) or normalize(asset_area) in identity.get("areas", parse_areas(identity.get("area")))
+
+
+def parse_areas(value):
+    return {normalize(area) for area in clean(value).split(",") if normalize(area)}
+
+
+def area_in_scope(asset_area, score_areas):
+    return "ALL" in score_areas or normalize(asset_area) in score_areas
+
+
+def can_view_score_areas(viewer, score_areas):
+    viewer_areas = set(viewer.get("areas", parse_areas(viewer.get("area"))))
+    return can_access_all(viewer) or "ALL" not in score_areas and bool(viewer_areas & score_areas)
+
+
+def progress_status(progress):
+    if progress >= 100:
+        return "Selesai"
+    if progress >= 90:
+        return "Hampir Selesai"
+    if progress >= 75:
+        return "On Track"
+    if progress >= 50:
+        return "Dalam Proses"
+    if progress > 0:
+        return "Perlu Dukungan"
+    return "Belum Mulai"
 
 
 def ensure_area_access(identity, asset_area):
@@ -360,11 +449,15 @@ def write_dashboard_sheet(summary, score):
     sheet = get_worksheet(DASHBOARD_SHEET)
     updated = now_text()
     values = [DASHBOARD_HEADERS, ["TOTAL ASSET", summary["total"], updated], ["SUDAH OPNAME", summary["completed"], updated], ["BELUM OPNAME", summary["pending"], updated], ["ASET BAIK", summary["good"], updated], ["ASET RUSAK", summary["damaged"], updated], [], SCORE_HEADERS]
-    values.extend([[item["role"], item["count"], item["percentage"] / 100] for item in score])
+    values.extend([[
+        item["name"], item["userId"], item["role"], item["scoreAreas"], item["total"], item["completed"],
+        item["pending"], item["progress"] / 100, item["status"], item["documentationCount"], item["notesCount"],
+        item["good"], item["damaged"]
+    ] for item in score])
     sheet.clear()
     sheet.update(values, "A1", value_input_option="USER_ENTERED")
     if score:
-        sheet.format(f"C9:C{8 + len(score)}", {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}})
+        sheet.format(f"H9:H{8 + len(score)}", {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}})
 
 
 def get_spreadsheet():

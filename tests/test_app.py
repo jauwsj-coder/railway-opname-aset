@@ -40,7 +40,14 @@ class AppTest(unittest.TestCase):
         os.environ["PHOTO_UPLOAD_SECRET"] = "photo-secret"
         self.master = FakeWorksheet("MASTER_ASET", [application.MASTER_HEADERS, ["AST-0001", "LAPTOP", "LT-01", "BUDI", "DONE", "OK", "KANTOR", "AREA A", "", "", "", ""]])
         self.log = FakeWorksheet("LOG_OPNAME", [application.LOG_HEADERS])
-        self.role = FakeWorksheet("ROLE", [application.ROLE_HEADERS, ["ADMIN", "1001", " SUPER ADMIN ", " all "], ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET", "ALL"], ["PIC AREA", "1003", "PIC ASET", "AREA B"], ["INVALID", "1004", "ADMIN", "ALL"]])
+        self.role = FakeWorksheet("ROLE", [
+            application.ROLE_HEADERS,
+            ["ADMIN", "1001", " SUPER ADMIN ", " all ", ""],
+            ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET", "ALL", "AREA A"],
+            ["PIC MULTI", "1003", "PIC ASET", "AREA B, AREA A", ""],
+            ["INVALID", "1004", "ADMIN", "ALL", ""],
+            ["PIC EMPTY", "1005", "PIC ASET", "AREA Z", ""],
+        ])
         self.dashboard = FakeWorksheet("DASHBOARD", [application.DASHBOARD_HEADERS])
         self.sheets = {"MASTER_ASET": self.master, "LOG_OPNAME": self.log, "ROLE": self.role, "DASHBOARD": self.dashboard}
         self.client = application.app.test_client()
@@ -70,16 +77,21 @@ class AppTest(unittest.TestCase):
         self.assertEqual(len(self.log.appended[0]), len(application.LOG_HEADERS))
         self.assertEqual(self.log.appended[0][-3:], ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET"])
         self.assertEqual(response.json["summary"], {"total": 1, "completed": 1, "pending": 0, "good": 1, "damaged": 0})
-        self.assertEqual(response.json["scoreCard"][0]["role"], "SUPER ADMIN, PIC ASET")
+        admin_score = next(item for item in response.json["scoreCard"] if item["name"] == "ADMIN PIC")
+        self.assertEqual(admin_score["progress"], 100)
+        self.assertEqual(admin_score["completed"], 1)
+        self.assertEqual(admin_score["status"], "Selesai")
 
         second = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Perlu perbaikan"})
         self.assertEqual(second.json["summary"], {"total": 1, "completed": 1, "pending": 0, "good": 0, "damaged": 1})
-        self.assertEqual(second.json["scoreCard"][0]["count"], 2)
+        admin_score = next(item for item in second.json["scoreCard"] if item["name"] == "ADMIN PIC")
+        self.assertEqual(admin_score["completed"], 1)
+        self.assertEqual(admin_score["progress"], 100)
 
         self.log.values = [application.LOG_HEADERS]
         dashboard = self.client.get("/api/dashboard", headers=headers).json
         self.assertEqual(dashboard["summary"], {"total": 1, "completed": 0, "pending": 1, "good": 0, "damaged": 0})
-        self.assertEqual(dashboard["scoreCard"], [])
+        self.assertTrue(all(item["progress"] == 0 for item in dashboard["scoreCard"]))
 
     @patch("app.get_worksheet")
     def test_pure_super_admin_excluded_from_score(self, get_worksheet):
@@ -88,14 +100,26 @@ class AppTest(unittest.TestCase):
         self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": ""})
         dashboard = self.client.get("/api/dashboard", headers=headers).json
         self.assertEqual(dashboard["summary"]["damaged"], 1)
-        self.assertEqual(dashboard["scoreCard"], [])
+        self.assertFalse(any(item["name"] == "ADMIN" for item in dashboard["scoreCard"]))
 
     @patch("app.get_worksheet")
     def test_pic_without_matching_area_rejected(self, get_worksheet):
         get_worksheet.side_effect = self.worksheet
-        response, _ = self.login("PIC AREA", "1003")
+        response, _ = self.login("PIC EMPTY", "1005")
         self.assertEqual(response.status_code, 403)
         self.assertIn("tidak memiliki aset", response.json["message"])
+
+    @patch("app.get_worksheet")
+    def test_multi_area_access_and_scorecard_fallback(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        response, headers = self.login("PIC MULTI", "1003")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["user"]["areas"], ["AREA A", "AREA B"])
+        dashboard = self.client.get("/api/dashboard", headers=headers).json
+        score = next(item for item in dashboard["scoreCard"] if item["name"] == "PIC MULTI")
+        self.assertEqual(score["scoreAreas"], "AREA B, AREA A")
+        self.assertEqual(score["total"], 1)
+        self.assertEqual(score["progress"], 0)
 
     @patch("app.get_spreadsheet")
     def test_setup_appends_missing_headers_without_overwriting_data(self, get_spreadsheet):
@@ -184,6 +208,25 @@ class AppTest(unittest.TestCase):
         self.assertEqual(january["summary"]["completed"], 1)
         self.assertEqual(february["summary"]["total"], 1)
         self.assertEqual(february["summary"]["completed"], 0)
+
+    @patch("app.get_worksheet")
+    def test_scorecard_period_and_information_counts(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        self.log.values.append([
+            "2026-01-15 10:00:00", "AST-0001", "LAPTOP", "LT-01", "BUDI", "DONE", "OK", "KANTOR",
+            "AREA A", "BAIK", "SUDAH OPNAME", "2026-01-15 10:00:00", "Lengkap",
+            "https://drive.google.com/file/d/1/view", "ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET"
+        ])
+        jan_jun = self.client.get("/api/dashboard?scorePeriod=JAN-JUN", headers=headers).json
+        jul_des = self.client.get("/api/dashboard?scorePeriod=JUL-DES", headers=headers).json
+        jan_score = next(item for item in jan_jun["scoreCard"] if item["name"] == "ADMIN PIC")
+        jul_score = next(item for item in jul_des["scoreCard"] if item["name"] == "ADMIN PIC")
+        self.assertEqual(jan_score["progress"], 100)
+        self.assertEqual(jan_score["documentationCount"], 1)
+        self.assertEqual(jan_score["notesCount"], 1)
+        self.assertEqual(jan_score["good"], 1)
+        self.assertEqual(jul_score["progress"], 0)
 
     @patch("app.get_worksheet")
     def test_asset_detail_still_loads_when_log_headers_incomplete(self, get_worksheet):
