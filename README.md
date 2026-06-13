@@ -21,15 +21,21 @@ Tiga kolom terakhir diperlukan agar sistem dapat mengetahui petugas dan menghitu
 `ROLE`:
 
 ```text
-NAMA USER | ID USER | ROLE
+NAMA USER | ID USER | ROLE | AREA
 ```
 
 Contoh:
 
 ```text
-YOLANA | ID-001 | PIC ASSET
-BUDI | ID-002 | TEKNISI
+GA CORPORATE | 1001 | SUPER ADMIN | ALL
+PIC ASET 1 | 1006 | PIC ASET | GRAMERCY
 ```
+
+Aturan akses area:
+
+- User dengan `ROLE` yang mengandung `SUPER ADMIN` dan `AREA` bernilai `ALL` dapat melihat dashboard, mencari, dan memproses aset dari seluruh area.
+- User selain itu hanya dapat melihat dashboard, Score Card, mencari, dan memproses aset dengan `AREA` yang sama seperti pada sheet `ROLE`.
+- Role gabungan seperti `SUPER ADMIN, PIC ASET` tetap dianggap Super Admin.
 
 `DASHBOARD` dibuat dan diperbarui otomatis. Isinya ringkasan aset dan Score Card per role.
 
@@ -73,7 +79,8 @@ Isi sheet `ROLE` setelah setup. Endpoint setup menulis header standar di baris p
 - Score Card menghitung persentase jumlah opname berdasarkan `ROLE` petugas yang login.
 - Urutan ditampilkan dari persentase tertinggi ke terendah.
 - Sheet `DASHBOARD` otomatis diperbarui setelah submit opname.
-- Tombol **Sync Sheet** dapat digunakan untuk memperbarui sheet secara manual.
+- Sheet `DASHBOARD` selalu berisi ringkasan seluruh area, termasuk saat submit dilakukan PIC area tertentu.
+- Tombol **Sync Sheet** hanya tersedia untuk `SUPER ADMIN` dengan `AREA` bernilai `ALL`.
 
 ## Scanner Tidak Berfungsi
 
@@ -82,6 +89,8 @@ Isi sheet `ROLE` setelah setup. Endpoint setup menulis header standar di baris p
 3. Gunakan Chrome/Safari terbaru dan pilih kamera belakang bila browser meminta pilihan.
 4. Pastikan QR hanya berisi `NOMOR ASSET`, misalnya `AST-0001`.
 5. Pesan penyebab kegagalan kamera akan muncul di bawah area scanner.
+
+Saat kamera aktif, tekan **Tangkap & Baca QR**. Aplikasi mengambil frame kamera, membaca QR dari hasil tangkapan, mengisi kolom `NOMOR ASSET`, lalu otomatis menjalankan pencarian aset. Scan real-time juga tetap aktif.
 
 ## Pengujian
 

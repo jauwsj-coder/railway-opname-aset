@@ -22,7 +22,7 @@ class AppTest(unittest.TestCase):
         os.environ["APP_SECRET_KEY"] = "test-secret"
         self.master = FakeWorksheet("MASTER_ASET", [application.MASTER_HEADERS, ["AST-0001", "LAPTOP", "LT-01", "BUDI", "YA", "AKTIF", "AREA A", "KANTOR", "", "", "", ""]])
         self.log = FakeWorksheet("LOG_OPNAME", [application.LOG_HEADERS])
-        self.role = FakeWorksheet("ROLE", [application.ROLE_HEADERS, ["YOLANA", "ID-001", "PIC ASSET"]])
+        self.role = FakeWorksheet("ROLE", [application.ROLE_HEADERS, ["YOLANA", "ID-001", "SUPER ADMIN, PIC ASSET", "ALL"], ["PIC AREA", "ID-002", "PIC ASSET", "AREA B"]])
         self.dashboard = FakeWorksheet("DASHBOARD", [application.DASHBOARD_HEADERS])
         self.client = application.app.test_client()
 
@@ -47,10 +47,18 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/assets/AST-0001", headers=headers).status_code, 200)
         response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "Baik", "documentation": "", "notes": "Sesuai"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.log.appended[0][-3:], ["YOLANA", "ID-001", "PIC ASSET"])
-        self.assertEqual(response.json["scoreCard"][0]["role"], "PIC ASSET")
+        self.assertEqual(self.log.appended[0][-3:], ["YOLANA", "ID-001", "SUPER ADMIN, PIC ASSET"])
+        self.assertEqual(response.json["scoreCard"][0]["role"], "SUPER ADMIN, PIC ASSET")
         self.assertEqual(self.client.post("/api/dashboard/sync", headers=headers).status_code, 200)
         self.assertEqual(self.dashboard.values[0], application.DASHBOARD_HEADERS)
+
+    @patch("app.get_worksheet")
+    def test_non_admin_cannot_process_other_area(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        response = self.client.post("/api/login", json={"name": "PIC AREA", "userId": "ID-002"})
+        headers = {"Authorization": "Bearer " + response.json["token"]}
+        self.assertEqual(self.client.get("/api/assets/AST-0001", headers=headers).status_code, 403)
+        self.assertEqual(self.client.post("/api/dashboard/sync", headers=headers).status_code, 403)
 
 
 if __name__ == "__main__":

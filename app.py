@@ -17,7 +17,7 @@ AUTH_MAX_AGE = 12 * 60 * 60
 
 MASTER_HEADERS = ["NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "AREA", "LOKASI DETAIL", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR"]
 LOG_HEADERS = ["TIMESTAMP", "NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI HASIL OPNAME", "STATUS", "TANGGAL OPNAME", "DOKUMENTASI", "KETERANGAN", "NAMA PETUGAS", "ID USER", "ROLE"]
-ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE"]
+ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE", "AREA"]
 DASHBOARD_HEADERS = ["METRIK", "NILAI", "DIPERBARUI"]
 SCORE_HEADERS = ["ROLE", "JUMLAH OPNAME", "PERSENTASE"]
 
@@ -63,34 +63,37 @@ def login():
     user = find_role_user(name, user_id)
     if not user:
         raise AppError("Nama User atau ID User tidak sesuai.", 401)
-    identity = {"name": user["NAMA USER"], "userId": user["ID USER"], "role": user["ROLE"]}
+    identity = {"name": user["NAMA USER"], "userId": user["ID USER"], "role": user["ROLE"], "area": user["AREA"]}
     return jsonify({"token": serializer().dumps(identity), "user": identity})
 
 
 @app.get("/api/dashboard")
 def dashboard():
-    require_user()
-    summary, score = build_dashboard()
+    identity = require_user()
+    summary, score = build_dashboard(identity)
     return jsonify({"summary": summary, "scoreCard": score})
 
 
 @app.post("/api/dashboard/sync")
 def sync_dashboard():
-    require_user()
-    summary, score = build_dashboard()
+    identity = require_user()
+    if not has_all_area_access(identity):
+        raise AppError("Hanya SUPER ADMIN dengan AREA ALL yang dapat melakukan Sync Sheet.", 403)
+    summary, score = build_dashboard(all_area_identity())
     write_dashboard_sheet(summary, score)
     return jsonify({"success": True, "message": "Sheet DASHBOARD berhasil diperbarui."})
 
 
 @app.get("/api/assets/<asset_code>")
 def find_asset(asset_code):
-    require_user()
+    identity = require_user()
     code = normalize_code(asset_code)
     if not code:
         raise AppError("NOMOR ASSET wajib diisi.")
     asset = next((row for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if normalize_code(row["NOMOR ASSET"]) == code), None)
     if not asset:
         raise AppError(f"Aset {code} tidak ditemukan.", 404)
+    ensure_area_access(identity, asset["AREA"])
     history = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize_code(row["NOMOR ASSET"]) == code]
     history.reverse()
     return jsonify({"asset": serialize_asset(asset), "history": [serialize_log(row) for row in history[:5]]})
@@ -121,6 +124,7 @@ def submit_opname():
             break
     if not asset:
         raise AppError(f"Aset {code} tidak ditemukan.", 404)
+    ensure_area_access(operator, asset["AREA"])
 
     date_value, status = now_text(), "Sudah Opname"
     updates = [
@@ -133,8 +137,9 @@ def submit_opname():
     log = get_worksheet(LOG_SHEET)
     validate_headers(log.get_all_values(), LOG_HEADERS, LOG_SHEET)
     log.append_row([date_value, asset["NOMOR ASSET"], asset["TYPE"], asset["NO LAYOUT"], asset["USER"], asset["KONDISI"], asset["LOKASI DETAIL"], asset["AREA"], condition, status, date_value, documentation, notes, operator["name"], operator["userId"], operator["role"]], value_input_option="USER_ENTERED")
-    summary, score = build_dashboard()
-    write_dashboard_sheet(summary, score)
+    summary, score = build_dashboard(operator)
+    global_summary, global_score = build_dashboard(all_area_identity())
+    write_dashboard_sheet(global_summary, global_score)
     return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score})
 
 
@@ -163,9 +168,10 @@ def require_user():
         identity = serializer().loads(header[7:], max_age=AUTH_MAX_AGE)
     except (BadSignature, SignatureExpired) as exc:
         raise AppError("Sesi sudah tidak valid. Silakan masuk kembali.", 401) from exc
-    if not find_role_user(identity.get("name"), identity.get("userId")):
+    current_user = find_role_user(identity.get("name"), identity.get("userId"))
+    if not current_user:
         raise AppError("User tidak lagi terdaftar pada sheet ROLE.", 401)
-    return identity
+    return {"name": current_user["NAMA USER"], "userId": current_user["ID USER"], "role": current_user["ROLE"], "area": current_user["AREA"]}
 
 
 def find_role_user(name, user_id):
@@ -173,19 +179,43 @@ def find_role_user(name, user_id):
     return next((row for row in get_rows(get_worksheet(ROLE_SHEET), ROLE_HEADERS) if clean(row["NAMA USER"]).casefold() == normalized_name and clean(row["ID USER"]).casefold() == normalized_id), None)
 
 
-def build_dashboard():
-    assets = [row for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if normalize_code(row["NOMOR ASSET"])]
+def build_dashboard(identity):
+    assets = [row for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if normalize_code(row["NOMOR ASSET"]) and can_access_area(identity, row["AREA"])]
     summary = {"total": len(assets), "completed": 0, "pending": 0, "good": 0, "damaged": 0}
     for asset in assets:
         summary["completed" if clean(asset["STATUS TERAKHIR"]).lower() == "sudah opname" else "pending"] += 1
         condition = clean(asset["KONDISI TERAKHIR"]).lower()
         if condition == "baik": summary["good"] += 1
         elif condition == "rusak": summary["damaged"] += 1
-    logs = get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS)
+    logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if can_access_area(identity, row["AREA"])]
     counts = Counter(clean(row["ROLE"]) or "TANPA ROLE" for row in logs if clean(row["STATUS"]).lower() == "sudah opname")
     total_logs = sum(counts.values())
     score = [{"role": role, "count": count, "percentage": round(count * 100 / total_logs, 2) if total_logs else 0} for role, count in counts.most_common()]
     return summary, score
+
+
+def is_super_admin(identity):
+    roles = [part.strip().upper() for part in clean(identity.get("role")).split(",")]
+    return "SUPER ADMIN" in roles
+
+
+def has_all_area_access(identity):
+    return is_super_admin(identity) and clean(identity.get("area")).upper() == "ALL"
+
+
+def all_area_identity():
+    return {"role": "SUPER ADMIN", "area": "ALL"}
+
+
+def can_access_area(identity, asset_area):
+    has_all_access = has_all_area_access(identity)
+    same_area = clean(asset_area).casefold() == clean(identity.get("area")).casefold()
+    return has_all_access or same_area
+
+
+def ensure_area_access(identity, asset_area):
+    if not can_access_area(identity, asset_area):
+        raise AppError(f"Anda tidak memiliki akses untuk memproses aset AREA {clean(asset_area) or '-'}.", 403)
 
 
 def write_dashboard_sheet(summary, score):
