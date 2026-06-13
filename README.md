@@ -1,70 +1,63 @@
-# Web App Opname Aset untuk Railway
+# Web App Opname Aset Railway
 
-Web app mobile untuk scan QR, opname aset, login petugas dari sheet `ROLE`, Score Card per role, serta sinkronisasi dashboard ke Google Sheets.
+## Header Wajib
 
-## Struktur Sheet
-
-`MASTER_ASET`:
-
-```text
-NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | AREA | LOKASI DETAIL | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR
-```
-
-`LOG_OPNAME`:
-
-```text
-TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | KONDISI | LOKASI DETAIL | AREA | KONDISI HASIL OPNAME | STATUS | TANGGAL OPNAME | DOKUMENTASI | KETERANGAN | NAMA PETUGAS | ID USER | ROLE
-```
-
-Tiga kolom terakhir diperlukan agar sistem dapat mengetahui petugas dan menghitung Score Card berdasarkan `ROLE`.
-
-`ROLE`:
+`ROLE`
 
 ```text
 NAMA USER | ID USER | ROLE | AREA
 ```
 
-Contoh:
+Role valid: `SUPER ADMIN`, `SUPER ADMIN, PIC ASET`, dan `PIC ASET`.
+
+- `SUPER ADMIN` tidak masuk Score Card.
+- `SUPER ADMIN, PIC ASET` masuk Score Card.
+- `PIC ASET` masuk Score Card dan hanya mengakses AREA yang ditugaskan.
+- `AREA = ALL` memberikan akses seluruh area.
+- Login wajib cocok antara `NAMA USER` dan `ID USER`.
+- ROLE dan AREA dinormalisasi dengan trim dan uppercase.
+
+`MASTER_ASET`
 
 ```text
-GA CORPORATE | 1001 | SUPER ADMIN | ALL
-PIC ASET 1 | 1006 | PIC ASET | GRAMERCY
+NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR
 ```
 
-Aturan akses area:
+`LOG_OPNAME`
 
-- User dengan `ROLE` yang mengandung `SUPER ADMIN` dan `AREA` bernilai `ALL` dapat melihat dashboard, mencari, dan memproses aset dari seluruh area.
-- User selain itu hanya dapat melihat dashboard, Score Card, mencari, dan memproses aset dengan `AREA` yang sama seperti pada sheet `ROLE`.
-- Role gabungan seperti `SUPER ADMIN, PIC ASET` tetap dianggap Super Admin.
+```text
+TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR | NAMA PETUGAS | ID USER | ROLE
+```
 
-`DASHBOARD` dibuat dan diperbarui otomatis. Isinya ringkasan aset dan Score Card per role.
+`LOG_OPNAME` adalah sumber utama riwayat, status dashboard, kondisi terakhir, dan Score Card.
 
-## Konfigurasi Google
+## Perhitungan Dashboard
 
-1. Aktifkan **Google Sheets API** dan **Google Drive API** di Google Cloud.
-2. Buat Service Account dan key JSON.
-3. Bagikan Google Spreadsheet sebagai **Editor** kepada email Service Account.
-4. Jangan memasukkan file JSON Service Account ke GitHub.
+- Total aset: jumlah aset pada `MASTER_ASET` sesuai akses AREA.
+- Sudah opname: jumlah `NOMOR ASSET` unik pada `LOG_OPNAME`.
+- Belum opname: total aset dikurangi sudah opname.
+- Aset baik: kondisi log terbaru bernilai `OK`, `BAIK`, atau `GOOD`.
+- Aset rusak: kondisi log terbaru bernilai `RUSAK`, `BROKEN`, `MAINTENANCE`, atau `NOT OK`.
+- Menghapus isi `LOG_OPNAME` akan mengubah dashboard dan Score Card pada refresh berikutnya.
+- Sheet `DASHBOARD` hanya salinan tampilan, bukan sumber data.
 
 ## Deploy Railway
 
-Upload seluruh isi folder ini ke repository GitHub, lalu deploy repository tersebut di Railway.
-
-Tambahkan Railway Variables:
+Tambahkan variables:
 
 ```text
 GOOGLE_SHEET_ID=ID spreadsheet
-GOOGLE_SERVICE_ACCOUNT_JSON=seluruh isi JSON Service Account dalam satu baris
-SETUP_TOKEN=token rahasia bebas
-APP_SECRET_KEY=rangkaian acak panjang untuk token sesi
+GOOGLE_SERVICE_ACCOUNT_JSON=seluruh JSON Service Account dalam satu baris
+SETUP_TOKEN=token rahasia
+APP_SECRET_KEY=rangkaian acak panjang
 APP_TIMEZONE=Asia/Jakarta
 ```
 
-Generate domain melalui **Settings > Networking > Generate Domain**. Kamera hanya berfungsi pada domain HTTPS.
+Service Account wajib dibagikan sebagai **Editor** pada Google Spreadsheet.
 
-## Setup atau Migrasi Header
+## Setup Header
 
-Jalankan sekali setelah deploy:
+Setelah deploy, jalankan:
 
 ```powershell
 Invoke-RestMethod -Method Post `
@@ -72,25 +65,26 @@ Invoke-RestMethod -Method Post `
   -Headers @{"X-Setup-Token"="TOKEN-RAHASIA-ANDA"}
 ```
 
-Isi sheet `ROLE` setelah setup. Endpoint setup menulis header standar di baris pertama dan tidak menghapus data baris berikutnya.
+`/api/setup` aman dijalankan berulang kali. Fungsi ini:
 
-## Score Card dan Sheet Dashboard
+- Membuat sheet yang belum tersedia.
+- Menambahkan header wajib yang belum tersedia.
+- Tidak menghapus data existing.
+- Tidak menimpa header atau data existing.
 
-- Score Card menghitung persentase jumlah opname berdasarkan `ROLE` petugas yang login.
-- Urutan ditampilkan dari persentase tertinggi ke terendah.
-- Sheet `DASHBOARD` otomatis diperbarui setelah submit opname.
-- Sheet `DASHBOARD` selalu berisi ringkasan seluruh area, termasuk saat submit dilakukan PIC area tertentu.
-- Tombol **Sync Sheet** hanya tersedia untuk `SUPER ADMIN` dengan `AREA` bernilai `ALL`.
+Setelah setup, pastikan header mengikuti struktur wajib. Header lama yang tidak digunakan boleh tetap ada sebagai kolom tambahan.
 
-## Scanner Tidak Berfungsi
+## Scanner HP
 
-1. Pastikan web app dibuka melalui domain Railway `https://`, bukan alamat HTTP.
-2. Izinkan kamera untuk domain Railway pada pengaturan Chrome HP.
-3. Gunakan Chrome/Safari terbaru dan pilih kamera belakang bila browser meminta pilihan.
-4. Pastikan QR hanya berisi `NOMOR ASSET`, misalnya `AST-0001`.
-5. Pesan penyebab kegagalan kamera akan muncul di bawah area scanner.
+Gunakan domain Railway HTTPS. Izinkan kamera pada browser HP, lalu tekan **Scan QR dengan kamera** dan **Tangkap & Baca QR**. QR harus berisi `NOMOR ASSET`.
 
-Saat kamera aktif, tekan **Tangkap & Baca QR**. Aplikasi mengambil frame kamera, membaca QR dari hasil tangkapan, mengisi kolom `NOMOR ASSET`, lalu otomatis menjalankan pencarian aset. Scan real-time juga tetap aktif.
+## Upload dan Redeploy
+
+1. Upload seluruh isi folder ini ke repository GitHub.
+2. Commit dan push perubahan.
+3. Railway akan redeploy otomatis.
+4. Jalankan `/api/setup`.
+5. Refresh web app dan login kembali.
 
 ## Pengujian
 

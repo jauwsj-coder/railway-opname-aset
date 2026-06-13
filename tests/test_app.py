@@ -13,62 +13,105 @@ class FakeWorksheet:
     def batch_update(self, updates, value_input_option=None): self.updates = updates
     def append_row(self, row, value_input_option=None): self.appended.append(row); self.values.append(row)
     def clear(self): self.values = []
-    def update(self, values, range_name=None, value_input_option=None): self.values = values
+    def update(self, values, range_name=None, value_input_option=None):
+        if range_name == "A1" or not self.values:
+            self.values = values
+        else:
+            self.values[0].extend(values[0])
     def format(self, *args, **kwargs): pass
+    def freeze(self, *args, **kwargs): pass
+
+
+class FakeSpreadsheet:
+    def __init__(self, worksheets): self.worksheets = worksheets
+    def worksheet(self, name):
+        if name not in self.worksheets: raise application.gspread.WorksheetNotFound(name)
+        return self.worksheets[name]
+    def add_worksheet(self, title, rows, cols):
+        self.worksheets[title] = FakeWorksheet(title, [])
+        return self.worksheets[title]
 
 
 class AppTest(unittest.TestCase):
     def setUp(self):
         os.environ["APP_SECRET_KEY"] = "test-secret"
-        self.master = FakeWorksheet("MASTER_ASET", [application.MASTER_HEADERS, ["AST-0001", "LAPTOP", "LT-01", "BUDI", "YA", "AKTIF", "AREA A", "KANTOR", "", "", "", ""]])
+        self.master = FakeWorksheet("MASTER_ASET", [application.MASTER_HEADERS, ["AST-0001", "LAPTOP", "LT-01", "BUDI", "DONE", "OK", "KANTOR", "AREA A", "", "", "", ""]])
         self.log = FakeWorksheet("LOG_OPNAME", [application.LOG_HEADERS])
-        self.role = FakeWorksheet("ROLE", [application.ROLE_HEADERS, ["YOLANA", "ID-001", "SUPER ADMIN, PIC ASSET", "ALL"], ["PIC AREA", "ID-002", "PIC ASSET", "AREA B"]])
+        self.role = FakeWorksheet("ROLE", [application.ROLE_HEADERS, ["ADMIN", "1001", " SUPER ADMIN ", " all "], ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET", "ALL"], ["PIC AREA", "1003", "PIC ASET", "AREA B"], ["INVALID", "1004", "ADMIN", "ALL"]])
         self.dashboard = FakeWorksheet("DASHBOARD", [application.DASHBOARD_HEADERS])
+        self.sheets = {"MASTER_ASET": self.master, "LOG_OPNAME": self.log, "ROLE": self.role, "DASHBOARD": self.dashboard}
         self.client = application.app.test_client()
 
-    def worksheet(self, name):
-        return {"MASTER_ASET": self.master, "LOG_OPNAME": self.log, "ROLE": self.role, "DASHBOARD": self.dashboard}[name]
+    def worksheet(self, name): return self.sheets[name]
 
-    def login(self):
-        response = self.client.post("/api/login", json={"name": "YOLANA", "userId": "ID-001"})
-        return {"Authorization": "Bearer " + response.json["token"]}
-
-    def test_health_page_and_login(self):
-        self.assertEqual(self.client.get("/").status_code, 200)
-        self.assertEqual(self.client.get("/healthz").status_code, 200)
-        with patch("app.get_worksheet", side_effect=self.worksheet):
-            self.assertEqual(self.client.get("/api/users").status_code, 200)
-            self.assertEqual(self.client.post("/api/login", json={"name": "YOLANA", "userId": "SALAH"}).status_code, 401)
+    def login(self, name="ADMIN PIC", user_id="1002"):
+        response = self.client.post("/api/login", json={"name": name, "userId": user_id})
+        return response, {"Authorization": "Bearer " + response.json["token"]} if response.status_code == 200 else {}
 
     @patch("app.get_worksheet")
-    def test_asset_submit_score_and_dashboard_sync(self, get_worksheet):
+    def test_login_normalization_validation_and_area_error(self, get_worksheet):
         get_worksheet.side_effect = self.worksheet
-        headers = self.login()
-        self.assertEqual(self.client.get("/api/assets/AST-0001", headers=headers).status_code, 200)
-        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "Baik", "documentation": "", "notes": "Sesuai"})
+        response, _ = self.login(" admin ", " 1001 ")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.log.appended[0][-3:], ["YOLANA", "ID-001", "SUPER ADMIN, PIC ASSET"])
-        self.assertEqual(response.json["scoreCard"][0]["role"], "SUPER ADMIN, PIC ASSET")
-        self.assertEqual(self.client.post("/api/dashboard/sync", headers=headers).status_code, 200)
-        self.assertEqual(self.dashboard.values[0], application.DASHBOARD_HEADERS)
+        self.assertEqual(response.json["user"]["role"], "SUPER ADMIN")
+        self.assertEqual(response.json["user"]["area"], "ALL")
+        self.assertEqual(self.login("INVALID", "1004")[0].status_code, 403)
+        self.assertEqual(self.login("ADMIN", "WRONG")[0].status_code, 401)
 
     @patch("app.get_worksheet")
-    def test_non_admin_cannot_process_other_area(self, get_worksheet):
+    def test_submit_log_dashboard_and_score_rules(self, get_worksheet):
         get_worksheet.side_effect = self.worksheet
-        response = self.client.post("/api/login", json={"name": "PIC AREA", "userId": "ID-002"})
-        headers = {"Authorization": "Bearer " + response.json["token"]}
-        self.assertEqual(self.client.get("/api/assets/AST-0001", headers=headers).status_code, 403)
-        self.assertEqual(self.client.post("/api/dashboard/sync", headers=headers).status_code, 403)
-
-    @patch("app.get_worksheet")
-    def test_master_dashboard_still_loads_when_log_headers_incomplete(self, get_worksheet):
-        self.log.values = [["TIMESTAMP", "NOMOR ASSET"]]
-        get_worksheet.side_effect = self.worksheet
-        headers = self.login()
-        response = self.client.get("/api/dashboard", headers=headers)
+        _, headers = self.login()
+        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "BAIK", "notes": "Sesuai"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json["summary"]["total"], 1)
-        self.assertTrue(response.json["warnings"])
+        self.assertEqual(len(self.log.appended[0]), len(application.LOG_HEADERS))
+        self.assertEqual(self.log.appended[0][-3:], ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET"])
+        self.assertEqual(response.json["summary"], {"total": 1, "completed": 1, "pending": 0, "good": 1, "damaged": 0})
+        self.assertEqual(response.json["scoreCard"][0]["role"], "SUPER ADMIN, PIC ASET")
+
+        second = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Perlu perbaikan"})
+        self.assertEqual(second.json["summary"], {"total": 1, "completed": 1, "pending": 0, "good": 0, "damaged": 1})
+        self.assertEqual(second.json["scoreCard"][0]["count"], 2)
+
+        self.log.values = [application.LOG_HEADERS]
+        dashboard = self.client.get("/api/dashboard", headers=headers).json
+        self.assertEqual(dashboard["summary"], {"total": 1, "completed": 0, "pending": 1, "good": 0, "damaged": 0})
+        self.assertEqual(dashboard["scoreCard"], [])
+
+    @patch("app.get_worksheet")
+    def test_pure_super_admin_excluded_from_score(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login("ADMIN", "1001")
+        self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": ""})
+        dashboard = self.client.get("/api/dashboard", headers=headers).json
+        self.assertEqual(dashboard["summary"]["damaged"], 1)
+        self.assertEqual(dashboard["scoreCard"], [])
+
+    @patch("app.get_worksheet")
+    def test_pic_without_matching_area_rejected(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        response, _ = self.login("PIC AREA", "1003")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("tidak memiliki aset", response.json["message"])
+
+    @patch("app.get_spreadsheet")
+    def test_setup_appends_missing_headers_without_overwriting_data(self, get_spreadsheet):
+        old_master = FakeWorksheet("MASTER_ASET", [["NOMOR ASSET", "TYPE"], ["AST-X", "MEJA"]])
+        spreadsheet = FakeSpreadsheet({"MASTER_ASET": old_master})
+        get_spreadsheet.return_value = spreadsheet
+        os.environ["SETUP_TOKEN"] = "setup-secret"
+        response = self.client.post("/api/setup", headers={"X-Setup-Token": "setup-secret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(old_master.values[1], ["AST-X", "MEJA"])
+        self.assertTrue(all(header in old_master.values[0] for header in application.MASTER_HEADERS))
+
+    def test_append_record_follows_actual_header_order(self):
+        headers = ["TYPE", "NOMOR ASSET", *[h for h in application.LOG_HEADERS if h not in {"TYPE", "NOMOR ASSET"}]]
+        sheet = FakeWorksheet("LOG_OPNAME", [headers])
+        record = {header: header + "-VALUE" for header in application.LOG_HEADERS}
+        application.append_record(sheet, "LOG_OPNAME", application.LOG_HEADERS, record)
+        self.assertEqual(sheet.appended[0][0], "TYPE-VALUE")
+        self.assertEqual(sheet.appended[0][1], "NOMOR ASSET-VALUE")
 
 
 if __name__ == "__main__":
