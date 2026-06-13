@@ -1,53 +1,64 @@
 # Web App Opname Aset untuk Railway
 
-Versi mandiri untuk Railway. Browser HP melakukan scan QR, sedangkan backend Flask membaca dan memperbarui Google Sheets melalui Service Account.
+Web app mobile untuk scan QR, opname aset, login petugas dari sheet `ROLE`, Score Card per role, serta sinkronisasi dashboard ke Google Sheets.
 
-## Header Google Sheets
+## Struktur Sheet
 
 `MASTER_ASET`:
 
 ```text
-NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR
+NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | AREA | LOKASI DETAIL | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR
 ```
 
 `LOG_OPNAME`:
 
 ```text
-TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | KONDISI | LOKASI DETAIL | KONDISI HASIL OPNAME | STATUS | TANGGAL OPNAME | DOKUMENTASI | KETERANGAN
+TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | KONDISI | LOKASI DETAIL | AREA | KONDISI HASIL OPNAME | STATUS | TANGGAL OPNAME | DOKUMENTASI | KETERANGAN | NAMA PETUGAS | ID USER | ROLE
 ```
 
-## 1. Siapkan Google Service Account
+Tiga kolom terakhir diperlukan agar sistem dapat mengetahui petugas dan menghitung Score Card berdasarkan `ROLE`.
 
-1. Buka Google Cloud Console dan buat/pilih project.
-2. Aktifkan **Google Sheets API** dan **Google Drive API**.
-3. Buka **IAM & Admin > Service Accounts**, lalu buat Service Account.
-4. Buat key dengan format JSON dan simpan secara aman.
-5. Buka Google Sheet database, klik **Share**, lalu bagikan sebagai **Editor** kepada email Service Account yang ada di file JSON.
-6. Salin Spreadsheet ID dari URL Google Sheets:
-   `https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit`
+`ROLE`:
 
-Jangan memasukkan file JSON Service Account ke GitHub.
+```text
+NAMA USER | ID USER | ROLE
+```
 
-## 2. Deploy ke Railway
+Contoh:
 
-1. Buat repository GitHub baru dan unggah seluruh isi folder ini.
-2. Di Railway, pilih **New Project > Deploy from GitHub repo**.
-3. Pilih repository tersebut.
-4. Buka tab **Variables**, lalu tambahkan:
+```text
+YOLANA | ID-001 | PIC ASSET
+BUDI | ID-002 | TEKNISI
+```
+
+`DASHBOARD` dibuat dan diperbarui otomatis. Isinya ringkasan aset dan Score Card per role.
+
+## Konfigurasi Google
+
+1. Aktifkan **Google Sheets API** dan **Google Drive API** di Google Cloud.
+2. Buat Service Account dan key JSON.
+3. Bagikan Google Spreadsheet sebagai **Editor** kepada email Service Account.
+4. Jangan memasukkan file JSON Service Account ke GitHub.
+
+## Deploy Railway
+
+Upload seluruh isi folder ini ke repository GitHub, lalu deploy repository tersebut di Railway.
+
+Tambahkan Railway Variables:
 
 ```text
 GOOGLE_SHEET_ID=ID spreadsheet
-GOOGLE_SERVICE_ACCOUNT_JSON=seluruh isi file JSON Service Account dalam satu baris
+GOOGLE_SERVICE_ACCOUNT_JSON=seluruh isi JSON Service Account dalam satu baris
 SETUP_TOKEN=token rahasia bebas
+APP_SECRET_KEY=rangkaian acak panjang untuk token sesi
 APP_TIMEZONE=Asia/Jakarta
 ```
 
-5. Buka **Settings > Networking > Generate Domain**.
-6. Railway akan menyediakan URL HTTPS. HTTPS diperlukan agar kamera HP dapat digunakan.
+Generate domain melalui **Settings > Networking > Generate Domain**. Kamera hanya berfungsi pada domain HTTPS.
 
-## 3. Siapkan Header Sheet
+## Setup atau Migrasi Header
 
-Jika header belum sesuai, jalankan endpoint setup sekali menggunakan PowerShell:
+Jalankan sekali setelah deploy:
 
 ```powershell
 Invoke-RestMethod -Method Post `
@@ -55,31 +66,24 @@ Invoke-RestMethod -Method Post `
   -Headers @{"X-Setup-Token"="TOKEN-RAHASIA-ANDA"}
 ```
 
-Endpoint setup menulis header standar pada baris pertama tanpa menghapus data di baris berikutnya.
+Isi sheet `ROLE` setelah setup. Endpoint setup menulis header standar di baris pertama dan tidak menghapus data baris berikutnya.
 
-## 4. Gunakan dari HP
+## Score Card dan Sheet Dashboard
 
-1. Buka domain Railway menggunakan Chrome HP.
-2. Tekan **Scan QR dengan kamera** dan izinkan kamera.
-3. Scan QR yang hanya berisi `NOMOR ASSET`, misalnya `AST-0001`.
-4. Isi hasil opname lalu tekan **Simpan opname**.
+- Score Card menghitung persentase jumlah opname berdasarkan `ROLE` petugas yang login.
+- Urutan ditampilkan dari persentase tertinggi ke terendah.
+- Sheet `DASHBOARD` otomatis diperbarui setelah submit opname.
+- Tombol **Sync Sheet** dapat digunakan untuk memperbarui sheet secara manual.
 
-## Menjalankan Lokal
+## Scanner Tidak Berfungsi
 
-```bash
-python -m venv .venv
-pip install -r requirements.txt
-gunicorn app:app --bind 0.0.0.0:8080
-```
+1. Pastikan web app dibuka melalui domain Railway `https://`, bukan alamat HTTP.
+2. Izinkan kamera untuk domain Railway pada pengaturan Chrome HP.
+3. Gunakan Chrome/Safari terbaru dan pilih kamera belakang bila browser meminta pilihan.
+4. Pastikan QR hanya berisi `NOMOR ASSET`, misalnya `AST-0001`.
+5. Pesan penyebab kegagalan kamera akan muncul di bawah area scanner.
 
-Untuk Windows tanpa Gunicorn:
-
-```powershell
-$env:PORT="8080"
-python app.py
-```
-
-Menjalankan pengujian:
+## Pengujian
 
 ```bash
 python -m unittest discover -s tests
