@@ -1,7 +1,7 @@
 import json
 import os
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -75,8 +75,9 @@ def login():
 @app.get("/api/dashboard")
 def dashboard():
     identity = require_user()
-    summary, score = build_dashboard(identity)
-    return jsonify({"summary": summary, "scoreCard": score, "warnings": [], "scope": identity["area"]})
+    start_date, end_date = parse_period(request.args.get("startDate"), request.args.get("endDate"))
+    summary, score, warnings = build_dashboard(identity, start_date, end_date)
+    return jsonify({"summary": summary, "scoreCard": score, "warnings": warnings, "scope": identity["area"]})
 
 
 @app.post("/api/dashboard/sync")
@@ -84,7 +85,7 @@ def sync_dashboard():
     identity = require_user()
     if identity["role"] not in {"SUPER ADMIN", "SUPER ADMIN, PIC ASET"} or identity["area"] != "ALL":
         raise AppError("Hanya SUPER ADMIN dengan AREA ALL yang dapat melakukan Sync Sheet.", 403)
-    summary, score = build_dashboard(all_area_identity())
+    summary, score, _ = build_dashboard(all_area_identity())
     write_dashboard_sheet(summary, score)
     return jsonify({"success": True, "message": "Sheet DASHBOARD berhasil diperbarui."})
 
@@ -148,10 +149,10 @@ def submit_opname():
         "ROLE": operator["role"],
     })
 
-    summary, score = build_dashboard(operator)
-    global_summary, global_score = build_dashboard(all_area_identity())
+    summary, score, warnings = build_dashboard(operator)
+    global_summary, global_score, _ = build_dashboard(all_area_identity())
     write_dashboard_sheet(global_summary, global_score)
-    return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score, "warnings": []})
+    return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score, "warnings": warnings})
 
 
 @app.post("/api/setup")
@@ -210,13 +211,18 @@ def ensure_pic_has_assets(identity):
         raise AppError(f"PIC ASET tidak memiliki aset sesuai AREA {identity['area']}.", 403)
 
 
-def build_dashboard(identity):
+def build_dashboard(identity, start_date=None, end_date=None):
     master_rows = get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS)
     blank_area_codes = [clean(row["NOMOR ASSET"]) for row in master_rows if normalize(row["NOMOR ASSET"]) and not normalize(row["AREA"])]
     if blank_area_codes:
         raise AppError(f"AREA kosong pada MASTER_ASET untuk NOMOR ASSET: {', '.join(blank_area_codes[:5])}.", 503)
     assets = [row for row in master_rows if normalize(row["NOMOR ASSET"]) and can_access_area(identity, row["AREA"])]
-    logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize(row["NOMOR ASSET"]) and can_access_area(identity, row["AREA"])]
+    warnings = []
+    try:
+        logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize(row["NOMOR ASSET"]) and can_access_area(identity, row["AREA"]) and log_in_period(row, start_date, end_date)]
+    except AppError as error:
+        logs = []
+        warnings.append(f"Data opname belum dapat dihitung: {error.message}")
     asset_codes = {normalize(row["NOMOR ASSET"]) for row in assets}
     scoped_logs = [row for row in logs if normalize(row["NOMOR ASSET"]) in asset_codes]
     latest_by_asset = {}
@@ -231,7 +237,29 @@ def build_dashboard(identity):
     counts = Counter(normalize(row["ROLE"]) for row in pic_logs)
     total_pic_logs = sum(counts.values())
     score = [{"role": role, "count": count, "percentage": round(count * 100 / total_pic_logs, 2) if total_pic_logs else 0} for role, count in counts.most_common()]
-    return summary, score
+    return summary, score, warnings
+
+
+def parse_period(start_value, end_value):
+    try:
+        start_date = datetime.combine(datetime.strptime(start_value, "%Y-%m-%d").date(), time.min, ZoneInfo(TIMEZONE)) if start_value else None
+        end_date = datetime.combine(datetime.strptime(end_value, "%Y-%m-%d").date(), time.max, ZoneInfo(TIMEZONE)) if end_value else None
+    except ValueError as exc:
+        raise AppError("Format periode tanggal tidak valid. Gunakan YYYY-MM-DD.") from exc
+    if start_date and end_date and start_date > end_date:
+        raise AppError("Tanggal awal tidak boleh lebih besar dari tanggal akhir.")
+    return start_date, end_date
+
+
+def log_in_period(row, start_date, end_date):
+    if not start_date and not end_date:
+        return True
+    value = clean(row["TANGGAL OPNAME TERAKHIR"] or row["TIMESTAMP"])
+    try:
+        log_date = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo(TIMEZONE))
+    except ValueError:
+        return False
+    return (not start_date or log_date >= start_date) and (not end_date or log_date <= end_date)
 
 
 def log_condition(row):

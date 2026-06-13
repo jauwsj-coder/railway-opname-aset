@@ -113,6 +113,29 @@ class AppTest(unittest.TestCase):
         self.assertEqual(sheet.appended[0][0], "TYPE-VALUE")
         self.assertEqual(sheet.appended[0][1], "NOMOR ASSET-VALUE")
 
+    @patch("app.get_worksheet")
+    def test_total_assets_survives_incomplete_log_headers(self, get_worksheet):
+        self.log.values = [["TIMESTAMP", "NOMOR ASSET"]]
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        response = self.client.get("/api/dashboard", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["summary"]["total"], 1)
+        self.assertEqual(response.json["summary"]["pending"], 1)
+        self.assertTrue(response.json["warnings"])
+
+    @patch("app.get_worksheet")
+    def test_dashboard_period_filter(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        self.log.values.append(["2026-01-15 10:00:00", "AST-0001", "LAPTOP", "LT-01", "BUDI", "DONE", "OK", "KANTOR", "AREA A", "BAIK", "SUDAH OPNAME", "2026-01-15 10:00:00", "", "ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET"])
+        january = self.client.get("/api/dashboard?startDate=2026-01-01&endDate=2026-01-31", headers=headers).json
+        february = self.client.get("/api/dashboard?startDate=2026-02-01&endDate=2026-02-28", headers=headers).json
+        self.assertEqual(january["summary"]["total"], 1)
+        self.assertEqual(january["summary"]["completed"], 1)
+        self.assertEqual(february["summary"]["total"], 1)
+        self.assertEqual(february["summary"]["completed"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,9 @@ TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DE
 - Aset rusak: kondisi log terbaru bernilai `RUSAK`, `BROKEN`, `MAINTENANCE`, atau `NOT OK`.
 - Menghapus isi `LOG_OPNAME` akan mengubah dashboard dan Score Card pada refresh berikutnya.
 - Sheet `DASHBOARD` hanya salinan tampilan, bukan sumber data.
+- Filter tanggal awal/akhir hanya memfilter data opname dari `LOG_OPNAME`.
+- Total aset tetap berasal dari `MASTER_ASET` dan tidak berubah ketika periode dipilih.
+- Jika header `LOG_OPNAME` belum lengkap, Total Aset dan Belum Opname tetap tampil dari `MASTER_ASET`; metrik berbasis log menjadi nol dan web menampilkan peringatan.
 
 ## Deploy Railway
 
