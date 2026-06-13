@@ -60,6 +60,16 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/assets/AST-0001", headers=headers).status_code, 403)
         self.assertEqual(self.client.post("/api/dashboard/sync", headers=headers).status_code, 403)
 
+    @patch("app.get_worksheet")
+    def test_master_dashboard_still_loads_when_log_headers_incomplete(self, get_worksheet):
+        self.log.values = [["TIMESTAMP", "NOMOR ASSET"]]
+        get_worksheet.side_effect = self.worksheet
+        headers = self.login()
+        response = self.client.get("/api/dashboard", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["summary"]["total"], 1)
+        self.assertTrue(response.json["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,8 +70,8 @@ def login():
 @app.get("/api/dashboard")
 def dashboard():
     identity = require_user()
-    summary, score = build_dashboard(identity)
-    return jsonify({"summary": summary, "scoreCard": score})
+    summary, score, warnings = build_dashboard(identity)
+    return jsonify({"summary": summary, "scoreCard": score, "warnings": warnings, "scope": identity["area"]})
 
 
 @app.post("/api/dashboard/sync")
@@ -79,7 +79,7 @@ def sync_dashboard():
     identity = require_user()
     if not has_all_area_access(identity):
         raise AppError("Hanya SUPER ADMIN dengan AREA ALL yang dapat melakukan Sync Sheet.", 403)
-    summary, score = build_dashboard(all_area_identity())
+    summary, score, _ = build_dashboard(all_area_identity())
     write_dashboard_sheet(summary, score)
     return jsonify({"success": True, "message": "Sheet DASHBOARD berhasil diperbarui."})
 
@@ -137,10 +137,10 @@ def submit_opname():
     log = get_worksheet(LOG_SHEET)
     validate_headers(log.get_all_values(), LOG_HEADERS, LOG_SHEET)
     log.append_row([date_value, asset["NOMOR ASSET"], asset["TYPE"], asset["NO LAYOUT"], asset["USER"], asset["KONDISI"], asset["LOKASI DETAIL"], asset["AREA"], condition, status, date_value, documentation, notes, operator["name"], operator["userId"], operator["role"]], value_input_option="USER_ENTERED")
-    summary, score = build_dashboard(operator)
-    global_summary, global_score = build_dashboard(all_area_identity())
+    summary, score, warnings = build_dashboard(operator)
+    global_summary, global_score, _ = build_dashboard(all_area_identity())
     write_dashboard_sheet(global_summary, global_score)
-    return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score})
+    return jsonify({"success": True, "message": "Opname aset berhasil disimpan.", "summary": summary, "scoreCard": score, "warnings": warnings})
 
 
 @app.post("/api/setup")
@@ -180,18 +180,26 @@ def find_role_user(name, user_id):
 
 
 def build_dashboard(identity):
-    assets = [row for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if normalize_code(row["NOMOR ASSET"]) and can_access_area(identity, row["AREA"])]
+    all_assets = [row for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if normalize_code(row["NOMOR ASSET"])]
+    assets = [row for row in all_assets if can_access_area(identity, row["AREA"])]
+    warnings = []
     summary = {"total": len(assets), "completed": 0, "pending": 0, "good": 0, "damaged": 0}
     for asset in assets:
         summary["completed" if clean(asset["STATUS TERAKHIR"]).lower() == "sudah opname" else "pending"] += 1
         condition = clean(asset["KONDISI TERAKHIR"]).lower()
         if condition == "baik": summary["good"] += 1
         elif condition == "rusak": summary["damaged"] += 1
-    logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if can_access_area(identity, row["AREA"])]
+    if all_assets and not assets:
+        warnings.append(f"MASTER_ASET berisi {len(all_assets)} aset, tetapi tidak ada yang cocok dengan lingkup AREA {clean(identity.get('area')) or '-'}.")
+    logs = []
+    try:
+        logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if can_access_area(identity, row["AREA"])]
+    except AppError as error:
+        warnings.append(f"Score Card belum dapat dihitung: {error.message}")
     counts = Counter(clean(row["ROLE"]) or "TANPA ROLE" for row in logs if clean(row["STATUS"]).lower() == "sudah opname")
     total_logs = sum(counts.values())
     score = [{"role": role, "count": count, "percentage": round(count * 100 / total_logs, 2) if total_logs else 0} for role, count in counts.most_common()]
-    return summary, score
+    return summary, score, warnings
 
 
 def is_super_admin(identity):
