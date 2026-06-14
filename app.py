@@ -12,6 +12,13 @@ import gspread
 from flask import Flask, Response, jsonify, render_template, request
 from google.oauth2.service_account import Credentials
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 app = Flask(__name__)
@@ -40,7 +47,10 @@ DATA_QUALITY_CATEGORIES = {
     "not_opnamed": "Belum Opname",
     "empty_documentation": "Dokumentasi Kosong",
     "damaged_without_notes": "Aset Rusak Tanpa Keterangan",
+    "completed_opname": "Sudah Opname",
+    "damaged_with_notes": "Aset Rusak dengan Keterangan",
 }
+DATA_QUALITY_EXPORT_FIELDS = ["SUMBER", "BARIS", "NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]
 MISSING_ASSET_MARKERS = {
     "TIDAK ADA NOMOR ASET", "TIDAK ADA NOMOR ASSET", "BELUM ADA NOMOR ASET",
     "BELUM ADA NOMOR ASSET", "NO ASSET KOSONG",
@@ -148,12 +158,20 @@ def data_quality_export():
         raise AppError("Kategori pemeriksaan data tidak valid.")
     start_date, end_date, period = parse_score_period(request.args.get("period"))
     results, _ = build_data_quality(identity, start_date, end_date)
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH", "SUMBER", "BARIS"])
-    writer.writeheader()
-    writer.writerows(results[category])
-    filename = f"pemeriksaan-data-{category}-{period.lower()}.csv"
-    return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    export_format = normalize(request.args.get("format")) or "CSV"
+    rows, label = results[category], DATA_QUALITY_CATEGORIES[category]
+    filename_base = f"pemeriksaan-data-{category}-{period.lower()}"
+    if export_format == "CSV":
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=DATA_QUALITY_EXPORT_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+        return download_response(("\ufeff" + output.getvalue()).encode("utf-8"), "text/csv; charset=utf-8", filename_base + ".csv")
+    if export_format == "PDF":
+        return download_response(build_data_quality_pdf(label, period, rows), "application/pdf", filename_base + ".pdf")
+    if export_format in {"PPT", "PPTX"}:
+        return download_response(build_data_quality_ppt(label, period, rows), "application/vnd.openxmlformats-officedocument.presentationml.presentation", filename_base + ".pptx")
+    raise AppError("Format export harus CSV, PDF, atau PPTX.")
 
 
 @app.get("/api/assets/<asset_code>")
@@ -393,6 +411,16 @@ def build_data_quality(identity, start_date=None, end_date=None):
             results["empty_documentation"].append(data_quality_record(row, "LOG_OPNAME", "Data opname belum memiliki dokumentasi."))
         if log_condition(row) in DAMAGED_CONDITIONS and not clean(row["KETERANGAN TERAKHIR"]):
             results["damaged_without_notes"].append(data_quality_record(row, "LOG_OPNAME", "Aset rusak belum memiliki keterangan."))
+    latest_logs = {}
+    for row in log_rows:
+        code = normalize(row["NOMOR ASSET"])
+        if code:
+            latest_logs[code] = row
+    for row in latest_logs.values():
+        if is_completed_log(row):
+            results["completed_opname"].append(data_quality_record(row, "LOG_OPNAME", "Aset sudah diopname pada periode terpilih."))
+        if log_condition(row) in DAMAGED_CONDITIONS and clean(row["KETERANGAN TERAKHIR"]):
+            results["damaged_with_notes"].append(data_quality_record(row, "LOG_OPNAME", "Aset rusak memiliki keterangan dan perlu ditindaklanjuti."))
     return results, warnings
 
 
@@ -414,6 +442,98 @@ def data_quality_record(row, source, problem):
 
 def is_completed_log(row):
     return normalize(row.get("OPNAME")) == "DONE" or "OPNAME" in normalize(row.get("STATUS TERAKHIR"))
+
+
+def download_response(data, mimetype, filename):
+    return Response(data, mimetype=mimetype, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def build_data_quality_pdf(label, period, rows):
+    output = io.BytesIO()
+    document = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=10 * mm, leftMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("Laporan Pemeriksaan Data Aset", styles["Title"]),
+        Paragraph(f"{label} | Periode: {period} | Jumlah: {len(rows)}", styles["Heading2"]),
+        Spacer(1, 5 * mm),
+    ]
+    headers = ["NO ASSET", "TYPE", "USER", "AREA", "LOKASI", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]
+    table_rows = [headers]
+    for row in rows:
+        table_rows.append([clean(row[field]) for field in ["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]])
+    if not rows:
+        table_rows.append(["Tidak ada data", "", "", "", "", "", "", "", ""])
+    table = Table(table_rows, repeatRows=1, colWidths=[30 * mm, 22 * mm, 25 * mm, 22 * mm, 30 * mm, 20 * mm, 28 * mm, 35 * mm, 45 * mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#009FB2")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DCE3E8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F6F9FA")]),
+    ]))
+    story.append(table)
+    document.build(story)
+    return output.getvalue()
+
+
+def build_data_quality_ppt(label, period, rows):
+    presentation = Presentation()
+    presentation.slide_width = Inches(13.333)
+    presentation.slide_height = Inches(7.5)
+    title_slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    add_ppt_title(title_slide, "Laporan Pemeriksaan Data Aset", f"{label} | Periode: {period} | Jumlah: {len(rows)}")
+    headers = ["NO ASSET", "TYPE", "USER", "AREA", "KONDISI", "KETERANGAN", "MASALAH"]
+    chunks = [rows[index:index + 7] for index in range(0, len(rows), 7)] or [[]]
+    for page, chunk in enumerate(chunks, start=1):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        add_ppt_title(slide, label, f"Periode {period} | Halaman {page}/{len(chunks)}")
+        table_shape = slide.shapes.add_table(len(chunk) + 1, len(headers), Inches(.35), Inches(1.35), Inches(12.63), Inches(5.65))
+        table = table_shape.table
+        for column, header in enumerate(headers):
+            table.cell(0, column).text = header
+        for row_index, row in enumerate(chunk, start=1):
+            for column, field in enumerate(["NOMOR ASSET", "TYPE", "USER", "AREA", "KONDISI", "KETERANGAN", "MASALAH"]):
+                table.cell(row_index, column).text = clean(row[field])
+        style_ppt_table(table)
+    output = io.BytesIO()
+    presentation.save(output)
+    return output.getvalue()
+
+
+def add_ppt_title(slide, title, subtitle):
+    title_box = slide.shapes.add_textbox(Inches(.45), Inches(.25), Inches(12.4), Inches(.55))
+    title_paragraph = title_box.text_frame.paragraphs[0]
+    title_paragraph.text = title
+    title_paragraph.font.size = Pt(24)
+    title_paragraph.font.bold = True
+    title_paragraph.font.color.rgb = ppt_rgb("007F91")
+    subtitle_box = slide.shapes.add_textbox(Inches(.45), Inches(.82), Inches(12.4), Inches(.35))
+    subtitle_paragraph = subtitle_box.text_frame.paragraphs[0]
+    subtitle_paragraph.text = subtitle
+    subtitle_paragraph.font.size = Pt(11)
+    subtitle_paragraph.font.color.rgb = ppt_rgb("647180")
+
+
+def style_ppt_table(table):
+    for row_index, row in enumerate(table.rows):
+        for cell in row.cells:
+            cell.margin_left = Inches(.04)
+            cell.margin_right = Inches(.04)
+            cell.margin_top = Inches(.03)
+            cell.margin_bottom = Inches(.03)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = ppt_rgb("009FB2" if row_index == 0 else "F6F9FA")
+            for paragraph in cell.text_frame.paragraphs:
+                paragraph.font.size = Pt(8)
+                paragraph.font.bold = row_index == 0
+                paragraph.font.color.rgb = ppt_rgb("FFFFFF" if row_index == 0 else "18222D")
+
+
+def ppt_rgb(value):
+    from pptx.dml.color import RGBColor
+    return RGBColor.from_string(value)
 
 
 def build_dashboard(identity, start_date=None, end_date=None, score_start_date=None, score_end_date=None):

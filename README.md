@@ -95,8 +95,10 @@ Pemeriksaan membaca kolom berdasarkan nama header, bukan posisi kolom. Menu meny
 - Aset yang belum pernah muncul pada `LOG_OPNAME` di periode terpilih.
 - Data opname tanpa dokumentasi.
 - Aset rusak tanpa keterangan.
+- Aset yang sudah opname pada periode terpilih.
+- Aset rusak dengan keterangan untuk daftar tindak lanjut.
 
-Pemeriksaan berbasis `LOG_OPNAME` dapat difilter untuk Semua Periode, Jan-Jun tahun berjalan, atau Jul-Des tahun berjalan. Klik kartu ringkasan untuk membuka detail sumber sheet dan nomor baris. Tombol **Export CSV** mengunduh kategori pemeriksaan yang sedang dibuka.
+Pemeriksaan berbasis `LOG_OPNAME` dapat difilter untuk Semua Periode, Jan-Jun tahun berjalan, atau Jul-Des tahun berjalan. Klik kartu ringkasan untuk membuka detail sumber sheet dan nomor baris. Hasil kategori yang sedang dibuka dapat diunduh sebagai **CSV**, **PDF**, atau **PPT**.
 
 Endpoint:
 
@@ -118,6 +120,16 @@ empty_user
 not_opnamed
 empty_documentation
 damaged_without_notes
+completed_opname
+damaged_with_notes
+```
+
+Format export:
+
+```text
+GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=CSV
+GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PDF
+GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PPTX
 ```
 
 ## Deploy Railway

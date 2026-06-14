@@ -246,6 +246,12 @@ class AppTest(unittest.TestCase):
             "KONDISI TERAKHIR": "RUSAK", "STATUS TERAKHIR": "SUDAH OPNAME", "TANGGAL OPNAME TERAKHIR": "2026-01-15 10:00:00",
             "KETERANGAN TERAKHIR": "", "DOKUMENTASI TERAKHIR": "",
         }))
+        self.log.values.append(values_for(application.LOG_HEADERS, {
+            "TIMESTAMP": "2026-02-15 10:00:00", "NOMOR ASSET": "AST-DUP", "TYPE": "MEJA", "USER": "A",
+            "OPNAME": "DONE", "KONDISI": "RUSAK", "LOKASI DETAIL": "LT 1", "AREA": "AREA A",
+            "KONDISI TERAKHIR": "RUSAK", "STATUS TERAKHIR": "SUDAH OPNAME", "TANGGAL OPNAME TERAKHIR": "2026-02-15 10:00:00",
+            "KETERANGAN TERAKHIR": "Perlu penggantian", "DOKUMENTASI TERAKHIR": "https://drive.google.com/file/d/1/view",
+        }))
         get_worksheet.side_effect = self.worksheet
         _, headers = self.login("ADMIN", "1001")
 
@@ -260,11 +266,15 @@ class AppTest(unittest.TestCase):
         self.assertEqual(counts["empty_user"], 1)
         self.assertEqual(counts["empty_documentation"], 1)
         self.assertEqual(counts["damaged_without_notes"], 1)
+        self.assertEqual(counts["completed_opname"], 2)
+        self.assertEqual(counts["damaged_with_notes"], 1)
 
         jul_des = self.client.get("/api/data-quality?period=JUL-DES", headers=headers).json
         jul_counts = {item["key"]: item["count"] for item in jul_des["summary"]}
         self.assertEqual(jul_counts["empty_documentation"], 0)
         self.assertEqual(jul_counts["damaged_without_notes"], 0)
+        self.assertEqual(jul_counts["completed_opname"], 0)
+        self.assertEqual(jul_counts["damaged_with_notes"], 0)
 
         detail = self.client.get("/api/data-quality/detail?category=duplicate_asset&period=ALL", headers=headers)
         self.assertEqual(detail.status_code, 200)
@@ -276,6 +286,14 @@ class AppTest(unittest.TestCase):
         self.assertEqual(exported.status_code, 200)
         self.assertIn("text/csv", exported.content_type)
         self.assertIn("NOMOR ASSET", exported.get_data(as_text=True))
+
+        pdf = self.client.get("/api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PDF", headers=headers)
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf.data[:4], b"%PDF")
+
+        ppt = self.client.get("/api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PPTX", headers=headers)
+        self.assertEqual(ppt.status_code, 200)
+        self.assertEqual(ppt.data[:2], b"PK")
 
     @patch("app.get_worksheet")
     def test_data_quality_access_and_incomplete_log_warning(self, get_worksheet):
