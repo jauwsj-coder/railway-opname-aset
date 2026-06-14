@@ -1,7 +1,6 @@
 import json
 import os
 import base64
-import csv
 import io
 import urllib.error
 import urllib.request
@@ -12,6 +11,9 @@ import gspread
 from flask import Flask, Response, jsonify, render_template, request
 from google.oauth2.service_account import Credentials
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from reportlab.lib import colors
@@ -158,20 +160,16 @@ def data_quality_export():
         raise AppError("Kategori pemeriksaan data tidak valid.")
     start_date, end_date, period = parse_score_period(request.args.get("period"))
     results, _ = build_data_quality(identity, start_date, end_date)
-    export_format = normalize(request.args.get("format")) or "CSV"
+    export_format = normalize(request.args.get("format")) or "XLSX"
     rows, label = results[category], DATA_QUALITY_CATEGORIES[category]
     filename_base = f"pemeriksaan-data-{category}-{period.lower()}"
-    if export_format == "CSV":
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=DATA_QUALITY_EXPORT_FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
-        return download_response(("\ufeff" + output.getvalue()).encode("utf-8"), "text/csv; charset=utf-8", filename_base + ".csv")
+    if export_format in {"XLS", "XLSX", "EXCEL"}:
+        return download_response(build_data_quality_excel(label, period, rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename_base + ".xlsx")
     if export_format == "PDF":
         return download_response(build_data_quality_pdf(label, period, rows), "application/pdf", filename_base + ".pdf")
     if export_format in {"PPT", "PPTX"}:
         return download_response(build_data_quality_ppt(label, period, rows), "application/vnd.openxmlformats-officedocument.presentationml.presentation", filename_base + ".pptx")
-    raise AppError("Format export harus CSV, PDF, atau PPTX.")
+    raise AppError("Format export harus XLSX, PDF, atau PPTX.")
 
 
 @app.get("/api/data-quality/export-all")
@@ -181,13 +179,13 @@ def data_quality_export_all():
     results, _ = build_data_quality(identity, start_date, end_date)
     export_format = normalize(request.args.get("format")) or "PDF"
     filename_base = f"pemeriksaan-data-semua-{period.lower()}"
-    if export_format == "CSV":
-        return download_response(build_all_data_quality_csv(period, results), "text/csv; charset=utf-8", filename_base + ".csv")
+    if export_format in {"XLS", "XLSX", "EXCEL"}:
+        return download_response(build_all_data_quality_excel(period, results), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename_base + ".xlsx")
     if export_format == "PDF":
         return download_response(build_all_data_quality_pdf(period, results), "application/pdf", filename_base + ".pdf")
     if export_format in {"PPT", "PPTX"}:
         return download_response(build_all_data_quality_ppt(period, results), "application/vnd.openxmlformats-officedocument.presentationml.presentation", filename_base + ".pptx")
-    raise AppError("Format export harus CSV, PDF, atau PPTX.")
+    raise AppError("Format export harus XLSX, PDF, atau PPTX.")
 
 
 @app.get("/api/assets/<asset_code>")
@@ -464,6 +462,66 @@ def download_response(data, mimetype, filename):
     return Response(data, mimetype=mimetype, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+def build_data_quality_excel(label, period, rows):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = safe_sheet_title(label)
+    write_excel_report_sheet(sheet, label, period, rows)
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def build_all_data_quality_excel(period, results):
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Ringkasan"
+    summary.append(["LAPORAN SEMUA PEMERIKSAAN DATA", f"PERIODE: {period}"])
+    summary.append(["KATEGORI", "JUMLAH"])
+    for category, label in DATA_QUALITY_CATEGORIES.items():
+        summary.append([label, len(results[category])])
+    style_excel_sheet(summary, header_row=2, widths=[42, 16])
+    for category, label in DATA_QUALITY_CATEGORIES.items():
+        sheet = workbook.create_sheet(safe_sheet_title(label))
+        write_excel_report_sheet(sheet, label, period, results[category])
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def write_excel_report_sheet(sheet, label, period, rows):
+    sheet.append([f"LAPORAN PEMERIKSAAN DATA: {label}", f"PERIODE: {period}", f"JUMLAH: {len(rows)}"])
+    sheet.append(DATA_QUALITY_EXPORT_FIELDS)
+    for row in rows:
+        sheet.append([row.get(field, "") for field in DATA_QUALITY_EXPORT_FIELDS])
+    if not rows:
+        sheet.append(["Tidak ada data"])
+    style_excel_sheet(sheet, header_row=2, widths=[14, 10, 24, 20, 24, 22, 34, 20, 28, 42, 52])
+
+
+def style_excel_sheet(sheet, header_row, widths):
+    header_fill = PatternFill("solid", fgColor="009FB2")
+    header_font = Font(color="FFFFFF", bold=True)
+    for row in sheet.iter_rows():
+        max_lines = 1
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+            max_lines = max(max_lines, max(1, len(str(cell.value or "")) // 35 + 1))
+        sheet.row_dimensions[row[0].row].height = min(max_lines * 15, 90)
+    for cell in sheet[header_row]:
+        cell.fill = header_fill
+        cell.font = header_font
+    sheet.freeze_panes = f"A{header_row + 1}"
+    sheet.auto_filter.ref = sheet.dimensions
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+
+
+def safe_sheet_title(value):
+    clean_title = "".join("_" if char in r'[]:*?/\\' else char for char in clean(value))
+    return (clean_title or "Laporan")[:31]
+
+
 def build_data_quality_pdf(label, period, rows):
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=10 * mm, leftMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
@@ -476,7 +534,7 @@ def build_data_quality_pdf(label, period, rows):
     headers = ["NO ASSET", "TYPE", "USER", "AREA", "LOKASI", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]
     table_rows = [headers]
     for row in rows:
-        table_rows.append([clean(row[field]) for field in ["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]])
+        table_rows.append([pdf_cell(row[field], styles) for field in ["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]])
     if not rows:
         table_rows.append(["Tidak ada data", "", "", "", "", "", "", "", ""])
     table = Table(table_rows, repeatRows=1, colWidths=[30 * mm, 22 * mm, 25 * mm, 22 * mm, 30 * mm, 20 * mm, 28 * mm, 35 * mm, 45 * mm])
@@ -510,17 +568,6 @@ def build_data_quality_ppt(label, period, rows):
     return output.getvalue()
 
 
-def build_all_data_quality_csv(period, results):
-    output = io.StringIO()
-    fields = ["KATEGORI", *DATA_QUALITY_EXPORT_FIELDS]
-    writer = csv.DictWriter(output, fieldnames=fields)
-    writer.writeheader()
-    for category, rows in results.items():
-        for row in rows:
-            writer.writerow({"KATEGORI": DATA_QUALITY_CATEGORIES[category], **row})
-    return ("\ufeff" + output.getvalue()).encode("utf-8")
-
-
 def build_all_data_quality_pdf(period, results):
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=10 * mm, leftMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
@@ -534,7 +581,7 @@ def build_all_data_quality_pdf(period, results):
         rows = results[category]
         story.extend([Paragraph(f"{label} ({len(rows)})", styles["Heading2"]), Spacer(1, 2 * mm)])
         headers = ["NO ASSET", "TYPE", "USER", "AREA", "LOKASI", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]
-        table_rows = [headers] + [[clean(row[field]) for field in ["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]] for row in rows]
+        table_rows = [headers] + [[pdf_cell(row[field], styles) for field in ["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]] for row in rows]
         if not rows:
             table_rows.append(["Tidak ada data", "", "", "", "", "", "", "", ""])
         table = Table(table_rows, repeatRows=1, colWidths=[30 * mm, 22 * mm, 25 * mm, 22 * mm, 30 * mm, 20 * mm, 28 * mm, 35 * mm, 45 * mm])
@@ -554,6 +601,10 @@ def pdf_table_style(font_size):
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F6F9FA")]),
     ])
+
+
+def pdf_cell(value, styles):
+    return Paragraph(clean(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), styles["BodyText"])
 
 
 def build_all_data_quality_ppt(period, results):
@@ -610,6 +661,7 @@ def style_ppt_table(table):
             cell.margin_right = Inches(.04)
             cell.margin_top = Inches(.03)
             cell.margin_bottom = Inches(.03)
+            cell.text_frame.word_wrap = True
             cell.fill.solid()
             cell.fill.fore_color.rgb = ppt_rgb("009FB2" if row_index == 0 else "F6F9FA")
             for paragraph in cell.text_frame.paragraphs:

@@ -98,7 +98,7 @@ Pemeriksaan membaca kolom berdasarkan nama header, bukan posisi kolom. Menu meny
 - Aset yang sudah opname pada periode terpilih.
 - Aset rusak dengan keterangan untuk daftar tindak lanjut.
 
-Pemeriksaan berbasis `LOG_OPNAME` dapat difilter untuk Semua Periode, Jan-Jun tahun berjalan, atau Jul-Des tahun berjalan. Klik kartu ringkasan untuk membuka detail sumber sheet dan nomor baris. Hasil kategori yang sedang dibuka dapat diunduh sebagai **CSV**, **PDF**, atau **PPT**.
+Pemeriksaan berbasis `LOG_OPNAME` dapat difilter untuk Semua Periode, Jan-Jun tahun berjalan, atau Jul-Des tahun berjalan. Klik kartu ringkasan untuk membuka detail sumber sheet dan nomor baris. Hasil kategori yang sedang dibuka dapat diunduh sebagai **Excel**, **PDF**, atau **PPT**. Laporan menggunakan wrap text agar keterangan panjang tetap rapi.
 
 Endpoint:
 
@@ -127,7 +127,7 @@ damaged_with_notes
 Format export:
 
 ```text
-GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=CSV
+GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=XLSX
 GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PDF
 GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PPTX
 ```
@@ -135,7 +135,7 @@ GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=P
 Download semua kategori dalam satu laporan untuk periode terpilih:
 
 ```text
-GET /api/data-quality/export-all?period=JAN-JUN&format=CSV
+GET /api/data-quality/export-all?period=JAN-JUN&format=XLSX
 GET /api/data-quality/export-all?period=JAN-JUN&format=PDF
 GET /api/data-quality/export-all?period=JAN-JUN&format=PPTX
 ```

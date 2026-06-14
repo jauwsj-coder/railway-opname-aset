@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import app as application
+from openpyxl import load_workbook
 
 
 def values_for(headers, data):
@@ -282,10 +283,11 @@ class AppTest(unittest.TestCase):
         self.assertEqual(detail.json["rows"][0]["SUMBER"], "MASTER_ASET")
         self.assertTrue(detail.json["rows"][0]["BARIS"])
 
-        exported = self.client.get("/api/data-quality/export?category=duplicate_asset&period=ALL", headers=headers)
+        exported = self.client.get("/api/data-quality/export?category=duplicate_asset&period=ALL&format=XLSX", headers=headers)
         self.assertEqual(exported.status_code, 200)
-        self.assertIn("text/csv", exported.content_type)
-        self.assertIn("NOMOR ASSET", exported.get_data(as_text=True))
+        self.assertEqual(exported.data[:2], b"PK")
+        workbook = load_workbook(io.BytesIO(exported.data))
+        self.assertTrue(workbook.active["A3"].alignment.wrap_text)
 
         pdf = self.client.get("/api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PDF", headers=headers)
         self.assertEqual(pdf.status_code, 200)
@@ -295,10 +297,11 @@ class AppTest(unittest.TestCase):
         self.assertEqual(ppt.status_code, 200)
         self.assertEqual(ppt.data[:2], b"PK")
 
-        all_csv = self.client.get("/api/data-quality/export-all?period=JAN-JUN&format=CSV", headers=headers)
-        self.assertEqual(all_csv.status_code, 200)
-        self.assertIn("KATEGORI", all_csv.get_data(as_text=True))
-        self.assertIn("Aset Rusak dengan Keterangan", all_csv.get_data(as_text=True))
+        all_excel = self.client.get("/api/data-quality/export-all?period=JAN-JUN&format=XLSX", headers=headers)
+        self.assertEqual(all_excel.status_code, 200)
+        self.assertEqual(all_excel.data[:2], b"PK")
+        all_workbook = load_workbook(io.BytesIO(all_excel.data))
+        self.assertGreater(len(all_workbook.sheetnames), 1)
 
         all_pdf = self.client.get("/api/data-quality/export-all?period=JAN-JUN&format=PDF", headers=headers)
         self.assertEqual(all_pdf.status_code, 200)
