@@ -80,6 +80,46 @@ Saat submit berhasil:
 - Pencarian aset dan form opname tetap tampil dari `MASTER_ASET` ketika header log belum lengkap. Riwayat menampilkan peringatan terpisah.
 - Submit opname tetap membutuhkan seluruh header `LOG_OPNAME`; jalankan `/api/setup` untuk melengkapinya.
 
+## Pemeriksaan Data
+
+Menu **Pemeriksaan Data** hanya tampil untuk:
+
+- `SUPER ADMIN`
+- `SUPER ADMIN, PIC ASET`
+
+Pemeriksaan membaca kolom berdasarkan nama header, bukan posisi kolom. Menu menyediakan:
+
+- Nomor Aset Double pada `MASTER_ASET`.
+- Belum Ada Nomor Aset, termasuk berbagai teks penanda nomor aset belum tersedia.
+- AREA, LOKASI DETAIL, TYPE, dan USER/PIC kosong.
+- Aset yang belum pernah muncul pada `LOG_OPNAME` di periode terpilih.
+- Data opname tanpa dokumentasi.
+- Aset rusak tanpa keterangan.
+
+Pemeriksaan berbasis `LOG_OPNAME` dapat difilter untuk Semua Periode, Jan-Jun tahun berjalan, atau Jul-Des tahun berjalan. Klik kartu ringkasan untuk membuka detail sumber sheet dan nomor baris. Tombol **Export CSV** mengunduh kategori pemeriksaan yang sedang dibuka.
+
+Endpoint:
+
+```text
+GET /api/data-quality?period=ALL
+GET /api/data-quality/detail?category=duplicate_asset&period=ALL
+GET /api/data-quality/export?category=duplicate_asset&period=ALL
+```
+
+Kategori endpoint:
+
+```text
+duplicate_asset
+missing_asset_number
+empty_area
+empty_location
+empty_type
+empty_user
+not_opnamed
+empty_documentation
+damaged_without_notes
+```
+
 ## Deploy Railway
 
 Tambahkan variables:

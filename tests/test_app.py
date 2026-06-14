@@ -6,6 +6,10 @@ from unittest.mock import patch
 import app as application
 
 
+def values_for(headers, data):
+    return [data.get(header, "") for header in headers]
+
+
 class FakeWorksheet:
     def __init__(self, title, values):
         self.title, self.values, self.appended = title, values, []
@@ -227,6 +231,67 @@ class AppTest(unittest.TestCase):
         self.assertEqual(jan_score["notesCount"], 1)
         self.assertEqual(jan_score["good"], 1)
         self.assertEqual(jul_score["progress"], 0)
+
+    @patch("app.get_worksheet")
+    def test_data_quality_summary_detail_period_and_export(self, get_worksheet):
+        self.master.values.extend([
+            values_for(application.MASTER_HEADERS, {"NOMOR ASSET": "AST-DUP", "TYPE": "MEJA", "USER": "A", "AREA": "AREA A", "LOKASI DETAIL": "LT 1"}),
+            values_for(application.MASTER_HEADERS, {"NOMOR ASSET": "AST-DUP", "TYPE": "MEJA", "USER": "A", "AREA": "AREA A", "LOKASI DETAIL": "LT 2"}),
+            values_for(application.MASTER_HEADERS, {"NOMOR ASSET": "BELUM ADA NOMOR ASSET", "TYPE": "", "USER": "", "AREA": "", "LOKASI DETAIL": ""}),
+            values_for(application.MASTER_HEADERS, {"NOMOR ASSET": "AST-NOT", "TYPE": "KURSI", "USER": "B", "AREA": "AREA B", "LOKASI DETAIL": "LT 3"}),
+        ])
+        self.log.values.append(values_for(application.LOG_HEADERS, {
+            "TIMESTAMP": "2026-01-15 10:00:00", "NOMOR ASSET": "AST-0001", "TYPE": "LAPTOP", "USER": "BUDI",
+            "OPNAME": "DONE", "KONDISI": "RUSAK", "LOKASI DETAIL": "KANTOR", "AREA": "AREA A",
+            "KONDISI TERAKHIR": "RUSAK", "STATUS TERAKHIR": "SUDAH OPNAME", "TANGGAL OPNAME TERAKHIR": "2026-01-15 10:00:00",
+            "KETERANGAN TERAKHIR": "", "DOKUMENTASI TERAKHIR": "",
+        }))
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login("ADMIN", "1001")
+
+        summary = self.client.get("/api/data-quality?period=JAN-JUN", headers=headers)
+        self.assertEqual(summary.status_code, 200)
+        counts = {item["key"]: item["count"] for item in summary.json["summary"]}
+        self.assertEqual(counts["duplicate_asset"], 2)
+        self.assertEqual(counts["missing_asset_number"], 1)
+        self.assertEqual(counts["empty_area"], 1)
+        self.assertEqual(counts["empty_location"], 1)
+        self.assertEqual(counts["empty_type"], 1)
+        self.assertEqual(counts["empty_user"], 1)
+        self.assertEqual(counts["empty_documentation"], 1)
+        self.assertEqual(counts["damaged_without_notes"], 1)
+
+        jul_des = self.client.get("/api/data-quality?period=JUL-DES", headers=headers).json
+        jul_counts = {item["key"]: item["count"] for item in jul_des["summary"]}
+        self.assertEqual(jul_counts["empty_documentation"], 0)
+        self.assertEqual(jul_counts["damaged_without_notes"], 0)
+
+        detail = self.client.get("/api/data-quality/detail?category=duplicate_asset&period=ALL", headers=headers)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(len(detail.json["rows"]), 2)
+        self.assertEqual(detail.json["rows"][0]["SUMBER"], "MASTER_ASET")
+        self.assertTrue(detail.json["rows"][0]["BARIS"])
+
+        exported = self.client.get("/api/data-quality/export?category=duplicate_asset&period=ALL", headers=headers)
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn("text/csv", exported.content_type)
+        self.assertIn("NOMOR ASSET", exported.get_data(as_text=True))
+
+    @patch("app.get_worksheet")
+    def test_data_quality_access_and_incomplete_log_warning(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, pic_headers = self.login("PIC MULTI", "1003")
+        denied = self.client.get("/api/data-quality", headers=pic_headers)
+        self.assertEqual(denied.status_code, 403)
+
+        self.log.values = [["TIMESTAMP", "NOMOR ASSET"]]
+        _, admin_headers = self.login("ADMIN", "1001")
+        response = self.client.get("/api/data-quality", headers=admin_headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["warnings"])
+        counts = {item["key"]: item["count"] for item in response.json["summary"]}
+        self.assertEqual(counts["empty_documentation"], 0)
+        self.assertEqual(counts["not_opnamed"], 0)
 
     @patch("app.get_worksheet")
     def test_asset_detail_still_loads_when_log_headers_incomplete(self, get_worksheet):

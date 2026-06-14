@@ -1,13 +1,15 @@
 import json
 import os
 import base64
+import csv
+import io
 import urllib.error
 import urllib.request
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 import gspread
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from google.oauth2.service_account import Credentials
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -28,6 +30,21 @@ LOG_HEADERS = ["TIMESTAMP", "NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME"
 ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE", "AREA", "AREA SCORECARD"]
 DASHBOARD_HEADERS = ["METRIK", "NILAI", "DIPERBARUI"]
 SCORE_HEADERS = ["NAMA PETUGAS", "ID USER", "ROLE", "AREA SCORECARD", "TOTAL ASSET", "SUDAH OPNAME", "BELUM OPNAME", "PROGRESS", "STATUS", "DOKUMENTASI ADA", "KETERANGAN ADA", "ASET BAIK", "ASET RUSAK"]
+DATA_QUALITY_CATEGORIES = {
+    "duplicate_asset": "Nomor Aset Double",
+    "missing_asset_number": "Belum Ada Nomor Aset",
+    "empty_area": "Area Kosong",
+    "empty_location": "Lokasi Detail Kosong",
+    "empty_type": "Type Kosong",
+    "empty_user": "User/PIC Kosong",
+    "not_opnamed": "Belum Opname",
+    "empty_documentation": "Dokumentasi Kosong",
+    "damaged_without_notes": "Aset Rusak Tanpa Keterangan",
+}
+MISSING_ASSET_MARKERS = {
+    "TIDAK ADA NOMOR ASET", "TIDAK ADA NOMOR ASSET", "BELUM ADA NOMOR ASET",
+    "BELUM ADA NOMOR ASSET", "NO ASSET KOSONG",
+}
 
 
 class AppError(Exception):
@@ -98,6 +115,45 @@ def sync_dashboard():
     summary, score, _ = build_dashboard(all_area_identity(), score_start_date=score_start, score_end_date=score_end)
     write_dashboard_sheet(summary, score)
     return jsonify({"success": True, "message": "Sheet DASHBOARD berhasil diperbarui."})
+
+
+@app.get("/api/data-quality")
+def data_quality_summary():
+    identity = require_data_quality_access()
+    start_date, end_date, period = parse_score_period(request.args.get("period"))
+    results, warnings = build_data_quality(identity, start_date, end_date)
+    return jsonify({
+        "summary": [{"key": key, "label": DATA_QUALITY_CATEGORIES[key], "count": len(results[key])} for key in DATA_QUALITY_CATEGORIES],
+        "warnings": warnings,
+        "period": period,
+    })
+
+
+@app.get("/api/data-quality/detail")
+def data_quality_detail():
+    identity = require_data_quality_access()
+    category = clean(request.args.get("category"))
+    if category not in DATA_QUALITY_CATEGORIES:
+        raise AppError("Kategori pemeriksaan data tidak valid.")
+    start_date, end_date, period = parse_score_period(request.args.get("period"))
+    results, warnings = build_data_quality(identity, start_date, end_date)
+    return jsonify({"category": category, "label": DATA_QUALITY_CATEGORIES[category], "rows": results[category], "warnings": warnings, "period": period})
+
+
+@app.get("/api/data-quality/export")
+def data_quality_export():
+    identity = require_data_quality_access()
+    category = clean(request.args.get("category"))
+    if category not in DATA_QUALITY_CATEGORIES:
+        raise AppError("Kategori pemeriksaan data tidak valid.")
+    start_date, end_date, period = parse_score_period(request.args.get("period"))
+    results, _ = build_data_quality(identity, start_date, end_date)
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH", "SUMBER", "BARIS"])
+    writer.writeheader()
+    writer.writerows(results[category])
+    filename = f"pemeriksaan-data-{category}-{period.lower()}.csv"
+    return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.get("/api/assets/<asset_code>")
@@ -281,6 +337,83 @@ def ensure_pic_has_assets(identity):
     assets = get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS)
     if not any(normalize(row["NOMOR ASSET"]) and can_access_area(identity, row["AREA"]) for row in assets):
         raise AppError(f"PIC ASET tidak memiliki aset sesuai AREA {identity['area']}.", 403)
+
+
+def require_data_quality_access():
+    identity = require_user()
+    if identity["role"] not in {"SUPER ADMIN", "SUPER ADMIN, PIC ASET"}:
+        raise AppError("Menu Pemeriksaan Data hanya dapat diakses SUPER ADMIN.", 403)
+    return all_area_identity()
+
+
+def build_data_quality(identity, start_date=None, end_date=None):
+    warnings = []
+    master_rows = get_rows_with_numbers(get_worksheet(MASTER_SHEET), MASTER_HEADERS)
+    log_available = True
+    try:
+        log_rows = get_rows_with_numbers(get_worksheet(LOG_SHEET), LOG_HEADERS)
+    except AppError as error:
+        log_available = False
+        log_rows = []
+        warnings.append(f"Pemeriksaan berbasis LOG_OPNAME belum dapat dihitung: {error.message}")
+
+    master_rows = [row for row in master_rows if can_access_area(identity, row["AREA"]) or not clean(row["AREA"])]
+    log_rows = [row for row in log_rows if can_access_area(identity, row["AREA"]) and log_in_period(row, start_date, end_date)]
+    results = {key: [] for key in DATA_QUALITY_CATEGORIES}
+
+    code_groups = {}
+    for row in master_rows:
+        code = normalize(row["NOMOR ASSET"])
+        if code and code not in MISSING_ASSET_MARKERS:
+            code_groups.setdefault(code, []).append(row)
+    for rows in code_groups.values():
+        if len(rows) > 1:
+            for row in rows:
+                results["duplicate_asset"].append(data_quality_record(row, "MASTER_ASET", f"NOMOR ASSET muncul {len(rows)} kali di MASTER_ASET."))
+
+    valid_master_codes = set(code_groups)
+    log_codes = {normalize(row["NOMOR ASSET"]) for row in log_rows if normalize(row["NOMOR ASSET"])}
+    for row in master_rows:
+        code = normalize(row["NOMOR ASSET"])
+        if not code or code in MISSING_ASSET_MARKERS:
+            results["missing_asset_number"].append(data_quality_record(row, "MASTER_ASET", "NOMOR ASSET kosong atau menggunakan penanda belum ada nomor aset."))
+        if not clean(row["AREA"]):
+            results["empty_area"].append(data_quality_record(row, "MASTER_ASET", "AREA kosong."))
+        if not clean(row["LOKASI DETAIL"]):
+            results["empty_location"].append(data_quality_record(row, "MASTER_ASET", "LOKASI DETAIL kosong."))
+        if not clean(row["TYPE"]):
+            results["empty_type"].append(data_quality_record(row, "MASTER_ASET", "TYPE kosong."))
+        if not clean(row["USER"]):
+            results["empty_user"].append(data_quality_record(row, "MASTER_ASET", "USER/PIC kosong."))
+        if log_available and code in valid_master_codes and code not in log_codes:
+            results["not_opnamed"].append(data_quality_record(row, "MASTER_ASET", "NOMOR ASSET belum muncul di LOG_OPNAME pada periode terpilih."))
+
+    for row in log_rows:
+        if is_completed_log(row) and not clean(row["DOKUMENTASI TERAKHIR"]):
+            results["empty_documentation"].append(data_quality_record(row, "LOG_OPNAME", "Data opname belum memiliki dokumentasi."))
+        if log_condition(row) in DAMAGED_CONDITIONS and not clean(row["KETERANGAN TERAKHIR"]):
+            results["damaged_without_notes"].append(data_quality_record(row, "LOG_OPNAME", "Aset rusak belum memiliki keterangan."))
+    return results, warnings
+
+
+def data_quality_record(row, source, problem):
+    return {
+        "NOMOR ASSET": clean(row["NOMOR ASSET"]) or "-",
+        "TYPE": clean(row["TYPE"]) or "-",
+        "USER": clean(row["USER"]) or "-",
+        "AREA": clean(row["AREA"]) or "-",
+        "LOKASI DETAIL": clean(row["LOKASI DETAIL"]) or "-",
+        "KONDISI": clean(row.get("KONDISI TERAKHIR") or row.get("KONDISI")) or "-",
+        "STATUS": clean(row.get("STATUS TERAKHIR") or row.get("OPNAME")) or "-",
+        "KETERANGAN": clean(row.get("KETERANGAN TERAKHIR")) or "-",
+        "MASALAH": problem,
+        "SUMBER": source,
+        "BARIS": row.get("_ROW_NUMBER", ""),
+    }
+
+
+def is_completed_log(row):
+    return normalize(row.get("OPNAME")) == "DONE" or "OPNAME" in normalize(row.get("STATUS TERAKHIR"))
 
 
 def build_dashboard(identity, start_date=None, end_date=None, score_start_date=None, score_end_date=None):
@@ -570,6 +703,17 @@ def get_rows(worksheet, expected_headers):
     values = get_sheet_values(worksheet, worksheet.title)
     validate_headers(values, expected_headers, worksheet.title)
     return [row_to_dict(values[0], row) for row in values[1:]]
+
+
+def get_rows_with_numbers(worksheet, expected_headers):
+    values = get_sheet_values(worksheet, worksheet.title)
+    validate_headers(values, expected_headers, worksheet.title)
+    rows = []
+    for row_number, values_row in enumerate(values[1:], start=2):
+        row = row_to_dict(values[0], values_row)
+        row["_ROW_NUMBER"] = row_number
+        rows.append(row)
+    return rows
 
 
 def append_record(worksheet, sheet_name, required_headers, record):
