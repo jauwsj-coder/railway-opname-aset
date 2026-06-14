@@ -10,12 +10,12 @@ NAMA USER | ID USER | ROLE | AREA | AREA SCORECARD
 
 Role valid: `SUPER ADMIN`, `SUPER ADMIN, PIC ASET`, dan `PIC ASET`.
 
-- `SUPER ADMIN` tidak masuk Score Card.
-- `SUPER ADMIN, PIC ASET` masuk Score Card.
-- `PIC ASET` masuk Score Card dan hanya mengakses AREA yang ditugaskan.
+- `SUPER ADMIN` tidak masuk Score Board.
+- `SUPER ADMIN, PIC ASET` masuk Score Board.
+- `PIC ASET` masuk Score Board dan hanya mengakses AREA yang ditugaskan.
 - `AREA = ALL` memberikan akses seluruh area.
 - `AREA` dan `AREA SCORECARD` dapat berisi beberapa area yang dipisahkan koma.
-- `AREA SCORECARD` menentukan target area penilaian Score Card. Jika kosong, sistem menggunakan `AREA`.
+- `AREA SCORECARD` menentukan target area penilaian Score Board. Jika kosong, sistem menggunakan `AREA`.
 - Login wajib cocok antara `NAMA USER` dan `ID USER`.
 - ROLE dan AREA dinormalisasi dengan trim dan uppercase.
 
@@ -31,20 +31,20 @@ NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA 
 TIMESTAMP | NOMOR ASSET | TYPE | NO LAYOUT | USER | OPNAME | KONDISI | LOKASI DETAIL | AREA | KONDISI TERAKHIR | STATUS TERAKHIR | TANGGAL OPNAME TERAKHIR | KETERANGAN TERAKHIR | DOKUMENTASI TERAKHIR | NAMA PETUGAS | ID USER | ROLE
 ```
 
-`LOG_OPNAME` adalah sumber utama riwayat, status dashboard, kondisi terakhir, dan Score Card.
+`LOG_OPNAME` adalah sumber utama riwayat, status dashboard, kondisi terakhir, dan Score Board.
 
-## Score Card Progress
+## Score Board Progress
 
-Score Card tidak menggunakan penalti atau formula poin berbobot. Setiap PIC dinilai berdasarkan progress penyelesaian aset pada `AREA SCORECARD`:
+Score Board tidak menggunakan penalti atau formula poin berbobot. Setiap PIC dinilai berdasarkan progress penyelesaian aset pada `AREA SCORECARD`:
 
 - Total Aset: jumlah `NOMOR ASSET` unik pada `MASTER_ASET` sesuai AREA SCORECARD.
-- Sudah Opname: jumlah `NOMOR ASSET` unik pada `LOG_OPNAME` sesuai AREA SCORECARD dan periode Score Card.
+- Sudah Opname: jumlah `NOMOR ASSET` unik pada `LOG_OPNAME` sesuai AREA SCORECARD dan periode Score Board.
 - Belum Opname: Total Aset dikurangi Sudah Opname.
 - Progress: Sudah Opname dibagi Total Aset dikali 100%.
 - Dokumentasi, keterangan, aset baik, dan aset rusak hanya informasi tambahan.
-- `SUPER ADMIN` tidak mempunyai baris Score Card.
-- `SUPER ADMIN, PIC ASET` dan `PIC ASET` mempunyai baris Score Card.
-- Pilihan periode Score Card: Jan-Jun tahun berjalan, Jul-Des tahun berjalan, atau Semua Periode.
+- `SUPER ADMIN` tidak mempunyai baris Score Board.
+- `SUPER ADMIN, PIC ASET` dan `PIC ASET` mempunyai baris Score Board.
+- Pilihan periode Score Board: Jan-Jun tahun berjalan, Jul-Des tahun berjalan, atau Semua Periode.
 
 Status progress:
 
@@ -72,7 +72,7 @@ Saat submit berhasil:
 - Belum opname: total aset dikurangi sudah opname.
 - Aset baik: kondisi log terbaru bernilai `OK`, `BAIK`, atau `GOOD`.
 - Aset rusak: kondisi log terbaru bernilai `RUSAK`, `BROKEN`, `MAINTENANCE`, atau `NOT OK`.
-- Menghapus isi `LOG_OPNAME` akan mengubah dashboard dan Score Card pada refresh berikutnya.
+- Menghapus isi `LOG_OPNAME` akan mengubah dashboard dan Score Board pada refresh berikutnya.
 - Sheet `DASHBOARD` hanya salinan tampilan, bukan sumber data.
 - Filter tanggal awal/akhir hanya memfilter data opname dari `LOG_OPNAME`.
 - Total aset tetap berasal dari `MASTER_ASET` dan tidak berubah ketika periode dipilih.

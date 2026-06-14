@@ -314,14 +314,14 @@ def build_score_card(viewer, master_rows, start_date=None, end_date=None, warnin
     try:
         role_rows = get_rows(get_worksheet(ROLE_SHEET), ROLE_HEADERS)
     except AppError as error:
-        warnings.append(f"Score Card belum dapat dihitung: {error.message}")
+        warnings.append(f"Score Board belum dapat dihitung: {error.message}")
         return []
     try:
         all_logs = [row for row in get_rows(get_worksheet(LOG_SHEET), LOG_HEADERS) if normalize(row["NOMOR ASSET"]) and log_in_period(row, start_date, end_date)]
     except AppError as error:
         all_logs = []
         if not any(error.message in warning for warning in warnings):
-            warnings.append(f"Score Card belum dapat dihitung dari LOG_OPNAME: {error.message}")
+            warnings.append(f"Score Board belum dapat dihitung dari LOG_OPNAME: {error.message}")
 
     score = []
     for role_row in role_rows:
@@ -381,7 +381,7 @@ def parse_score_period(value):
         return datetime(year, 1, 1, tzinfo=ZoneInfo(TIMEZONE)), datetime.combine(datetime(year, 6, 30).date(), time.max, ZoneInfo(TIMEZONE)), "JAN-JUN"
     if period == "JUL-DES":
         return datetime(year, 7, 1, tzinfo=ZoneInfo(TIMEZONE)), datetime.combine(datetime(year, 12, 31).date(), time.max, ZoneInfo(TIMEZONE)), "JUL-DES"
-    raise AppError("Periode Score Card tidak valid.")
+    raise AppError("Periode Score Board tidak valid.")
 
 
 def log_in_period(row, start_date, end_date):
