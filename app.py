@@ -174,6 +174,22 @@ def data_quality_export():
     raise AppError("Format export harus CSV, PDF, atau PPTX.")
 
 
+@app.get("/api/data-quality/export-all")
+def data_quality_export_all():
+    identity = require_data_quality_access()
+    start_date, end_date, period = parse_score_period(request.args.get("period"))
+    results, _ = build_data_quality(identity, start_date, end_date)
+    export_format = normalize(request.args.get("format")) or "PDF"
+    filename_base = f"pemeriksaan-data-semua-{period.lower()}"
+    if export_format == "CSV":
+        return download_response(build_all_data_quality_csv(period, results), "text/csv; charset=utf-8", filename_base + ".csv")
+    if export_format == "PDF":
+        return download_response(build_all_data_quality_pdf(period, results), "application/pdf", filename_base + ".pdf")
+    if export_format in {"PPT", "PPTX"}:
+        return download_response(build_all_data_quality_ppt(period, results), "application/vnd.openxmlformats-officedocument.presentationml.presentation", filename_base + ".pptx")
+    raise AppError("Format export harus CSV, PDF, atau PPTX.")
+
+
 @app.get("/api/assets/<asset_code>")
 def find_asset(asset_code):
     identity = require_user()
@@ -464,15 +480,7 @@ def build_data_quality_pdf(label, period, rows):
     if not rows:
         table_rows.append(["Tidak ada data", "", "", "", "", "", "", "", ""])
     table = Table(table_rows, repeatRows=1, colWidths=[30 * mm, 22 * mm, 25 * mm, 22 * mm, 30 * mm, 20 * mm, 28 * mm, 35 * mm, 45 * mm])
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#009FB2")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DCE3E8")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F6F9FA")]),
-    ]))
+    table.setStyle(pdf_table_style(6.5))
     story.append(table)
     document.build(story)
     return output.getvalue()
@@ -497,6 +505,85 @@ def build_data_quality_ppt(label, period, rows):
             for column, field in enumerate(["NOMOR ASSET", "TYPE", "USER", "AREA", "KONDISI", "KETERANGAN", "MASALAH"]):
                 table.cell(row_index, column).text = clean(row[field])
         style_ppt_table(table)
+    output = io.BytesIO()
+    presentation.save(output)
+    return output.getvalue()
+
+
+def build_all_data_quality_csv(period, results):
+    output = io.StringIO()
+    fields = ["KATEGORI", *DATA_QUALITY_EXPORT_FIELDS]
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    for category, rows in results.items():
+        for row in rows:
+            writer.writerow({"KATEGORI": DATA_QUALITY_CATEGORIES[category], **row})
+    return ("\ufeff" + output.getvalue()).encode("utf-8")
+
+
+def build_all_data_quality_pdf(period, results):
+    output = io.BytesIO()
+    document = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=10 * mm, leftMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
+    styles = getSampleStyleSheet()
+    story = [Paragraph("Laporan Semua Pemeriksaan Data Aset", styles["Title"]), Paragraph(f"Periode: {period}", styles["Heading2"]), Spacer(1, 4 * mm)]
+    summary_rows = [["KATEGORI", "JUMLAH"]] + [[DATA_QUALITY_CATEGORIES[key], len(results[key])] for key in DATA_QUALITY_CATEGORIES]
+    summary_table = Table(summary_rows, repeatRows=1, colWidths=[100 * mm, 30 * mm])
+    summary_table.setStyle(pdf_table_style(8))
+    story.extend([summary_table, Spacer(1, 8 * mm)])
+    for category, label in DATA_QUALITY_CATEGORIES.items():
+        rows = results[category]
+        story.extend([Paragraph(f"{label} ({len(rows)})", styles["Heading2"]), Spacer(1, 2 * mm)])
+        headers = ["NO ASSET", "TYPE", "USER", "AREA", "LOKASI", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]
+        table_rows = [headers] + [[clean(row[field]) for field in ["NOMOR ASSET", "TYPE", "USER", "AREA", "LOKASI DETAIL", "KONDISI", "STATUS", "KETERANGAN", "MASALAH"]] for row in rows]
+        if not rows:
+            table_rows.append(["Tidak ada data", "", "", "", "", "", "", "", ""])
+        table = Table(table_rows, repeatRows=1, colWidths=[30 * mm, 22 * mm, 25 * mm, 22 * mm, 30 * mm, 20 * mm, 28 * mm, 35 * mm, 45 * mm])
+        table.setStyle(pdf_table_style(6.5))
+        story.extend([table, Spacer(1, 7 * mm)])
+    document.build(story)
+    return output.getvalue()
+
+
+def pdf_table_style(font_size):
+    return TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#009FB2")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DCE3E8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F6F9FA")]),
+    ])
+
+
+def build_all_data_quality_ppt(period, results):
+    presentation = Presentation()
+    presentation.slide_width = Inches(13.333)
+    presentation.slide_height = Inches(7.5)
+    title_slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    add_ppt_title(title_slide, "Laporan Semua Pemeriksaan Data Aset", f"Periode: {period}")
+    summary_slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    add_ppt_title(summary_slide, "Ringkasan Pemeriksaan Data", f"Periode: {period}")
+    summary_table = summary_slide.shapes.add_table(len(DATA_QUALITY_CATEGORIES) + 1, 2, Inches(1.5), Inches(1.35), Inches(10.3), Inches(5.55)).table
+    summary_table.cell(0, 0).text, summary_table.cell(0, 1).text = "KATEGORI", "JUMLAH"
+    for index, (category, label) in enumerate(DATA_QUALITY_CATEGORIES.items(), start=1):
+        summary_table.cell(index, 0).text = label
+        summary_table.cell(index, 1).text = str(len(results[category]))
+    style_ppt_table(summary_table)
+    for category, label in DATA_QUALITY_CATEGORIES.items():
+        rows = results[category]
+        chunks = [rows[index:index + 7] for index in range(0, len(rows), 7)] or [[]]
+        for page, chunk in enumerate(chunks, start=1):
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            add_ppt_title(slide, label, f"Periode {period} | Jumlah {len(rows)} | Halaman {page}/{len(chunks)}")
+            headers = ["NO ASSET", "TYPE", "USER", "AREA", "KONDISI", "KETERANGAN", "MASALAH"]
+            table = slide.shapes.add_table(len(chunk) + 1, len(headers), Inches(.35), Inches(1.35), Inches(12.63), Inches(5.65)).table
+            for column, header in enumerate(headers):
+                table.cell(0, column).text = header
+            for row_index, row in enumerate(chunk, start=1):
+                for column, field in enumerate(["NOMOR ASSET", "TYPE", "USER", "AREA", "KONDISI", "KETERANGAN", "MASALAH"]):
+                    table.cell(row_index, column).text = clean(row[field])
+            style_ppt_table(table)
     output = io.BytesIO()
     presentation.save(output)
     return output.getvalue()

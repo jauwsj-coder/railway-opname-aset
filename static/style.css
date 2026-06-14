@@ -567,6 +567,22 @@ fieldset { margin: 0 0 16px; padding: 0; border: 0; }
   font-size: 11px;
 }
 
+.all-export-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--purple-soft);
+  color: var(--purple);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .bar {
   height: 8px;
   margin-top: 12px;

@@ -132,6 +132,16 @@ GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=P
 GET /api/data-quality/export?category=damaged_with_notes&period=JAN-JUN&format=PPTX
 ```
 
+Download semua kategori dalam satu laporan untuk periode terpilih:
+
+```text
+GET /api/data-quality/export-all?period=JAN-JUN&format=CSV
+GET /api/data-quality/export-all?period=JAN-JUN&format=PDF
+GET /api/data-quality/export-all?period=JAN-JUN&format=PPTX
+```
+
+Laporan gabungan PDF dan PPT berisi ringkasan jumlah seluruh kategori serta detail tiap kategori.
+
 ## Deploy Railway
 
 Tambahkan variables:

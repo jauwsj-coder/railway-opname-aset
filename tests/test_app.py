@@ -295,6 +295,19 @@ class AppTest(unittest.TestCase):
         self.assertEqual(ppt.status_code, 200)
         self.assertEqual(ppt.data[:2], b"PK")
 
+        all_csv = self.client.get("/api/data-quality/export-all?period=JAN-JUN&format=CSV", headers=headers)
+        self.assertEqual(all_csv.status_code, 200)
+        self.assertIn("KATEGORI", all_csv.get_data(as_text=True))
+        self.assertIn("Aset Rusak dengan Keterangan", all_csv.get_data(as_text=True))
+
+        all_pdf = self.client.get("/api/data-quality/export-all?period=JAN-JUN&format=PDF", headers=headers)
+        self.assertEqual(all_pdf.status_code, 200)
+        self.assertEqual(all_pdf.data[:4], b"%PDF")
+
+        all_ppt = self.client.get("/api/data-quality/export-all?period=JAN-JUN&format=PPTX", headers=headers)
+        self.assertEqual(all_ppt.status_code, 200)
+        self.assertEqual(all_ppt.data[:2], b"PK")
+
     @patch("app.get_worksheet")
     def test_data_quality_access_and_incomplete_log_warning(self, get_worksheet):
         get_worksheet.side_effect = self.worksheet
