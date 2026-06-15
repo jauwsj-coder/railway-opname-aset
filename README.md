@@ -225,7 +225,17 @@ Invoke-RestMethod -Method Post `
 - Tidak menghapus data existing.
 - Tidak menimpa header atau data existing.
 
+Setup juga membuat sheet `APPROVAL_PERUBAHAN_ASET` dengan header:
+
+`TIMESTAMP PENGAJUAN | ID PENGAJUAN | NOMOR ASSET | USER LAMA | USER BARU | AREA LAMA | AREA BARU | LOKASI DETAIL LAMA | LOKASI DETAIL BARU | ALASAN | NAMA PENGAJU | ID USER PENGAJU | ROLE PENGAJU | STATUS APPROVAL | TIMESTAMP APPROVAL | APPROVER | CATATAN APPROVAL`
+
 Setelah setup, pastikan header mengikuti struktur wajib. Header lama yang tidak digunakan boleh tetap ada sebagai kolom tambahan.
+
+## Approval Perubahan Detail Aset
+
+PIC ASET dapat mengajukan perubahan `USER`, `AREA`, dan `LOKASI DETAIL` melalui ikon pensil pada Detail Asset. Selama status masih `PENDING`, data `MASTER_ASET` tidak berubah.
+
+Tab **Approval Data** hanya muncul untuk login dengan `NAMA USER` tepat `GA CORPORATE`. Setelah disetujui, ketiga kolom otomatis diperbarui di `MASTER_ASET`. Persetujuan dan penolakan tetap tersimpan pada sheet `APPROVAL_PERUBAHAN_ASET` sebagai audit trail.
 
 ## Scanner HP
 

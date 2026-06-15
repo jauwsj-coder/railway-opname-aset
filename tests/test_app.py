@@ -52,9 +52,11 @@ class AppTest(unittest.TestCase):
             ["PIC MULTI", "1003", "PIC ASET", "AREA B, AREA A", ""],
             ["INVALID", "1004", "ADMIN", "ALL", ""],
             ["PIC EMPTY", "1005", "PIC ASET", "AREA Z", ""],
+            ["GA CORPORATE", "1006", "SUPER ADMIN", "ALL", ""],
         ])
         self.dashboard = FakeWorksheet("DASHBOARD", [application.DASHBOARD_HEADERS])
-        self.sheets = {"MASTER_ASET": self.master, "LOG_OPNAME": self.log, "ROLE": self.role, "DASHBOARD": self.dashboard}
+        self.approval = FakeWorksheet("APPROVAL_PERUBAHAN_ASET", [application.APPROVAL_HEADERS])
+        self.sheets = {"MASTER_ASET": self.master, "LOG_OPNAME": self.log, "ROLE": self.role, "DASHBOARD": self.dashboard, "APPROVAL_PERUBAHAN_ASET": self.approval}
         self.client = application.app.test_client()
 
     def worksheet(self, name): return self.sheets[name]
@@ -125,6 +127,47 @@ class AppTest(unittest.TestCase):
         self.assertEqual(score["scoreAreas"], "AREA B, AREA A")
         self.assertEqual(score["total"], 1)
         self.assertEqual(score["progress"], 0)
+
+    @patch("app.get_worksheet")
+    def test_pic_change_request_waits_for_ga_corporate_approval(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, pic_headers = self.login("PIC MULTI", "1003")
+        response = self.client.post("/api/asset-change-requests", headers=pic_headers, json={
+            "assetCode": "AST-0001", "user": "USER BARU", "area": "AREA B",
+            "detailLocation": "RUANG BARU", "reason": "Aset dipindahkan",
+        })
+        self.assertEqual(response.status_code, 200)
+        request_row = dict(zip(application.APPROVAL_HEADERS, self.approval.appended[0]))
+        self.assertEqual(request_row["STATUS APPROVAL"], "PENDING")
+        self.assertEqual(request_row["USER LAMA"], "BUDI")
+        self.assertFalse(hasattr(self.master, "updates"))
+
+        denied = self.client.post(f"/api/asset-change-requests/{response.json['requestId']}/approve", headers=pic_headers, json={})
+        self.assertEqual(denied.status_code, 403)
+
+        _, ga_headers = self.login("GA CORPORATE", "1006")
+        approved = self.client.post(f"/api/asset-change-requests/{response.json['requestId']}/approve", headers=ga_headers, json={"notes": "Sesuai"})
+        self.assertEqual(approved.status_code, 200)
+        master_updates = {item["range"]: item["values"][0][0] for item in self.master.updates}
+        self.assertEqual(master_updates["D2"], "USER BARU")
+        self.assertEqual(master_updates["H2"], "AREA B")
+        self.assertEqual(master_updates["G2"], "RUANG BARU")
+        approval_updates = {item["range"]: item["values"][0][0] for item in self.approval.updates}
+        self.assertIn("APPROVED", approval_updates.values())
+        self.assertIn("GA CORPORATE", approval_updates.values())
+
+    @patch("app.get_worksheet")
+    def test_asset_change_request_rejects_unchanged_and_duplicate_pending(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login("PIC MULTI", "1003")
+        unchanged = self.client.post("/api/asset-change-requests", headers=headers, json={
+            "assetCode": "AST-0001", "user": "BUDI", "area": "AREA A", "detailLocation": "KANTOR", "reason": "Tes",
+        })
+        self.assertEqual(unchanged.status_code, 400)
+        payload = {"assetCode": "AST-0001", "user": "BUDI BARU", "area": "AREA A", "detailLocation": "KANTOR", "reason": "Tes"}
+        self.assertEqual(self.client.post("/api/asset-change-requests", headers=headers, json=payload).status_code, 200)
+        duplicate = self.client.post("/api/asset-change-requests", headers=headers, json=payload)
+        self.assertEqual(duplicate.status_code, 409)
 
     @patch("app.get_spreadsheet")
     def test_setup_appends_missing_headers_without_overwriting_data(self, get_spreadsheet):

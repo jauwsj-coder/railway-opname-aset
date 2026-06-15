@@ -4,6 +4,7 @@ import base64
 import io
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -24,7 +25,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 
 app = Flask(__name__)
-MASTER_SHEET, LOG_SHEET, ROLE_SHEET, DASHBOARD_SHEET = "MASTER_ASET", "LOG_OPNAME", "ROLE", "DASHBOARD"
+MASTER_SHEET, LOG_SHEET, ROLE_SHEET, DASHBOARD_SHEET, APPROVAL_SHEET = "MASTER_ASET", "LOG_OPNAME", "ROLE", "DASHBOARD", "APPROVAL_PERUBAHAN_ASET"
 TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Jakarta")
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 AUTH_MAX_AGE = 12 * 60 * 60
@@ -38,6 +39,7 @@ MASTER_HEADERS = ["NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI
 LOG_HEADERS = ["TIMESTAMP", "NOMOR ASSET", "TYPE", "NO LAYOUT", "USER", "OPNAME", "KONDISI", "LOKASI DETAIL", "AREA", "KONDISI TERAKHIR", "STATUS TERAKHIR", "TANGGAL OPNAME TERAKHIR", "KETERANGAN TERAKHIR", "DOKUMENTASI TERAKHIR", "NAMA PETUGAS", "ID USER", "ROLE"]
 ROLE_HEADERS = ["NAMA USER", "ID USER", "ROLE", "AREA", "AREA SCORECARD"]
 DASHBOARD_HEADERS = ["METRIK", "NILAI", "DIPERBARUI"]
+APPROVAL_HEADERS = ["TIMESTAMP PENGAJUAN", "ID PENGAJUAN", "NOMOR ASSET", "USER LAMA", "USER BARU", "AREA LAMA", "AREA BARU", "LOKASI DETAIL LAMA", "LOKASI DETAIL BARU", "ALASAN", "NAMA PENGAJU", "ID USER PENGAJU", "ROLE PENGAJU", "STATUS APPROVAL", "TIMESTAMP APPROVAL", "APPROVER", "CATATAN APPROVAL"]
 SCORE_HEADERS = ["NAMA PETUGAS", "ID USER", "ROLE", "AREA SCORECARD", "TOTAL ASSET", "SUDAH OPNAME", "BELUM OPNAME", "PROGRESS", "STATUS", "DOKUMENTASI ADA", "KETERANGAN ADA", "ASET BAIK", "ASET RUSAK"]
 DATA_QUALITY_CATEGORIES = {
     "duplicate_asset": "Nomor Aset Double",
@@ -207,6 +209,75 @@ def find_asset(asset_code):
     return jsonify({"asset": serialize_asset(asset), "history": [serialize_log(row) for row in history[:5]], "warnings": warnings})
 
 
+@app.post("/api/asset-change-requests")
+def create_asset_change_request():
+    identity = require_user()
+    if identity["role"] not in PIC_ROLES:
+        raise AppError("Pengajuan perubahan detail aset hanya dapat dibuat oleh PIC ASET.", 403)
+    payload = request.get_json(silent=True) or {}
+    code = normalize(payload.get("assetCode"))
+    proposed_user = clean(payload.get("user"))
+    proposed_area = clean(payload.get("area"))
+    proposed_location = clean(payload.get("detailLocation"))
+    reason = clean(payload.get("reason"))
+    if not code:
+        raise AppError("NOMOR ASSET wajib diisi.")
+    if not proposed_user or not proposed_area or not proposed_location:
+        raise AppError("USER, AREA, dan LOKASI DETAIL baru wajib diisi.")
+    if not reason:
+        raise AppError("Alasan perubahan wajib diisi.")
+
+    asset = next((row for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if normalize(row["NOMOR ASSET"]) == code), None)
+    if not asset:
+        raise AppError("Aset tidak ditemukan.", 404)
+    ensure_area_access(identity, asset["AREA"])
+    if all(normalize(new) == normalize(old) for new, old in (
+        (proposed_user, asset["USER"]), (proposed_area, asset["AREA"]), (proposed_location, asset["LOKASI DETAIL"])
+    )):
+        raise AppError("Tidak ada perubahan detail aset yang diajukan.")
+
+    approval = get_worksheet(APPROVAL_SHEET)
+    ensure_required_headers(approval, APPROVAL_SHEET, APPROVAL_HEADERS)
+    pending = next((row for row in get_rows(approval, APPROVAL_HEADERS)
+                    if normalize(row["NOMOR ASSET"]) == code and normalize(row["STATUS APPROVAL"]) == "PENDING"), None)
+    if pending:
+        raise AppError(f"Aset ini masih memiliki pengajuan PENDING: {clean(pending['ID PENGAJUAN'])}.", 409)
+    request_id = f"REQ-{uuid.uuid4().hex[:8].upper()}"
+    append_record(approval, APPROVAL_SHEET, APPROVAL_HEADERS, {
+        "TIMESTAMP PENGAJUAN": now_text(), "ID PENGAJUAN": request_id, "NOMOR ASSET": asset["NOMOR ASSET"],
+        "USER LAMA": asset["USER"], "USER BARU": proposed_user, "AREA LAMA": asset["AREA"], "AREA BARU": proposed_area,
+        "LOKASI DETAIL LAMA": asset["LOKASI DETAIL"], "LOKASI DETAIL BARU": proposed_location, "ALASAN": reason,
+        "NAMA PENGAJU": identity["name"], "ID USER PENGAJU": identity["userId"], "ROLE PENGAJU": identity["role"],
+        "STATUS APPROVAL": "PENDING",
+    })
+    return jsonify({"success": True, "message": f"Pengajuan {request_id} berhasil dikirim ke GA CORPORATE.", "requestId": request_id})
+
+
+@app.get("/api/asset-change-requests")
+def list_asset_change_requests():
+    require_ga_corporate()
+    status = normalize(request.args.get("status") or "PENDING")
+    rows = get_rows(get_worksheet(APPROVAL_SHEET), APPROVAL_HEADERS)
+    if status != "ALL":
+        rows = [row for row in rows if normalize(row["STATUS APPROVAL"]) == status]
+    rows.reverse()
+    return jsonify({"requests": [serialize_change_request(row) for row in rows], "status": status})
+
+
+@app.post("/api/asset-change-requests/<request_id>/approve")
+def approve_asset_change_request(request_id):
+    approver = require_ga_corporate()
+    payload = request.get_json(silent=True) or {}
+    return process_asset_change_request(request_id, "APPROVED", approver, clean(payload.get("notes")))
+
+
+@app.post("/api/asset-change-requests/<request_id>/reject")
+def reject_asset_change_request(request_id):
+    approver = require_ga_corporate()
+    payload = request.get_json(silent=True) or {}
+    return process_asset_change_request(request_id, "REJECTED", approver, clean(payload.get("notes")))
+
+
 @app.post("/api/opname")
 def submit_opname():
     operator = require_user()
@@ -321,7 +392,8 @@ def setup_sheets():
         raise AppError("Setup token tidak valid.", 403)
     spreadsheet = get_spreadsheet()
     results = [ensure_worksheet(spreadsheet, name, headers) for name, headers in (
-        (MASTER_SHEET, MASTER_HEADERS), (LOG_SHEET, LOG_HEADERS), (ROLE_SHEET, ROLE_HEADERS), (DASHBOARD_SHEET, DASHBOARD_HEADERS)
+        (MASTER_SHEET, MASTER_HEADERS), (LOG_SHEET, LOG_HEADERS), (ROLE_SHEET, ROLE_HEADERS),
+        (DASHBOARD_SHEET, DASHBOARD_HEADERS), (APPROVAL_SHEET, APPROVAL_HEADERS)
     )]
     return jsonify({"success": True, "message": "Setup selesai tanpa menghapus data existing.", "sheets": results})
 
@@ -376,6 +448,50 @@ def require_data_quality_access():
     if identity["role"] not in {"SUPER ADMIN", "SUPER ADMIN, PIC ASET"}:
         raise AppError("Menu Pemeriksaan Data hanya dapat diakses SUPER ADMIN.", 403)
     return all_area_identity()
+
+
+def require_ga_corporate():
+    identity = require_user()
+    if normalize(identity["name"]) != "GA CORPORATE":
+        raise AppError("Hanya GA CORPORATE yang dapat memproses approval perubahan detail aset.", 403)
+    return identity
+
+
+def process_asset_change_request(request_id, decision, approver, notes):
+    approval = get_worksheet(APPROVAL_SHEET)
+    approval_values = get_sheet_values(approval, APPROVAL_SHEET)
+    validate_headers(approval_values, APPROVAL_HEADERS, APPROVAL_SHEET)
+    approval_map = {header: index + 1 for index, header in enumerate(approval_values[0])}
+    request_row, change = next(((row_number, row_to_dict(approval_values[0], row)) for row_number, row in enumerate(approval_values[1:], start=2)
+                                if normalize(row_to_dict(approval_values[0], row)["ID PENGAJUAN"]) == normalize(request_id)), (None, None))
+    if not change:
+        raise AppError("Pengajuan perubahan aset tidak ditemukan.", 404)
+    if normalize(change["STATUS APPROVAL"]) != "PENDING":
+        raise AppError(f"Pengajuan ini sudah berstatus {clean(change['STATUS APPROVAL'])}.", 409)
+
+    if decision == "APPROVED":
+        master = get_worksheet(MASTER_SHEET)
+        master_values = get_sheet_values(master, MASTER_SHEET)
+        validate_headers(master_values, MASTER_HEADERS, MASTER_SHEET)
+        master_map = {header: index + 1 for index, header in enumerate(master_values[0])}
+        asset_row = next((row_number for row_number, row in enumerate(master_values[1:], start=2)
+                          if normalize(row_to_dict(master_values[0], row)["NOMOR ASSET"]) == normalize(change["NOMOR ASSET"])), None)
+        if not asset_row:
+            raise AppError("Aset pada pengajuan tidak lagi ditemukan di MASTER_ASET.", 404)
+        master.batch_update([
+            {"range": gspread.utils.rowcol_to_a1(asset_row, master_map["USER"]), "values": [[change["USER BARU"]]]},
+            {"range": gspread.utils.rowcol_to_a1(asset_row, master_map["AREA"]), "values": [[change["AREA BARU"]]]},
+            {"range": gspread.utils.rowcol_to_a1(asset_row, master_map["LOKASI DETAIL"]), "values": [[change["LOKASI DETAIL BARU"]]]},
+        ], value_input_option="USER_ENTERED")
+
+    approval.batch_update([
+        {"range": gspread.utils.rowcol_to_a1(request_row, approval_map["STATUS APPROVAL"]), "values": [[decision]]},
+        {"range": gspread.utils.rowcol_to_a1(request_row, approval_map["TIMESTAMP APPROVAL"]), "values": [[now_text()]]},
+        {"range": gspread.utils.rowcol_to_a1(request_row, approval_map["APPROVER"]), "values": [[approver["name"]]]},
+        {"range": gspread.utils.rowcol_to_a1(request_row, approval_map["CATATAN APPROVAL"]), "values": [[notes]]},
+    ], value_input_option="USER_ENTERED")
+    action = "disetujui dan MASTER_ASET diperbarui" if decision == "APPROVED" else "ditolak"
+    return jsonify({"success": True, "message": f"Pengajuan {clean(change['ID PENGAJUAN'])} berhasil {action}."})
 
 
 def build_data_quality(identity, start_date=None, end_date=None):
@@ -999,6 +1115,18 @@ def serialize_asset(row):
 
 def serialize_log(row):
     return {"timestamp": clean(row["TIMESTAMP"]) or "-", "condition": clean(row["KONDISI TERAKHIR"] or row["KONDISI"]), "status": clean(row["STATUS TERAKHIR"]), "opnameDate": clean(row["TANGGAL OPNAME TERAKHIR"]) or "-", "notes": clean(row["KETERANGAN TERAKHIR"]), "documentation": clean(row["DOKUMENTASI TERAKHIR"]), "operator": clean(row["NAMA PETUGAS"]), "role": clean(row["ROLE"])}
+
+
+def serialize_change_request(row):
+    return {
+        "requestId": clean(row["ID PENGAJUAN"]), "submittedAt": clean(row["TIMESTAMP PENGAJUAN"]),
+        "assetCode": clean(row["NOMOR ASSET"]), "oldUser": clean(row["USER LAMA"]), "newUser": clean(row["USER BARU"]),
+        "oldArea": clean(row["AREA LAMA"]), "newArea": clean(row["AREA BARU"]),
+        "oldDetailLocation": clean(row["LOKASI DETAIL LAMA"]), "newDetailLocation": clean(row["LOKASI DETAIL BARU"]),
+        "reason": clean(row["ALASAN"]), "requester": clean(row["NAMA PENGAJU"]), "requesterId": clean(row["ID USER PENGAJU"]),
+        "requesterRole": clean(row["ROLE PENGAJU"]), "status": clean(row["STATUS APPROVAL"]),
+        "approvedAt": clean(row["TIMESTAMP APPROVAL"]), "approver": clean(row["APPROVER"]), "approvalNotes": clean(row["CATATAN APPROVAL"]),
+    }
 
 
 def now_text():

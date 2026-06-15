@@ -455,6 +455,73 @@ dl div {
   transform: translateY(-1px);
 }
 
+.heading-row > .edit-pencil { flex: none; }
+
+.asset-edit-form {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.approval-callout {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 15px;
+  border-left: 4px solid var(--gold);
+  border-radius: 9px;
+  padding: 12px;
+  background: var(--gold-soft);
+  color: var(--ink);
+}
+
+.approval-callout span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.approval-list { margin-top: 16px; }
+
+.approval-item {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 15px;
+  background: var(--surface-soft);
+}
+
+.approval-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.approval-head strong, .approval-head span { display: block; }
+.approval-head span, .approval-item p { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.approval-head b { color: var(--gold); font-size: 11px; }
+
+.approval-change-grid {
+  display: grid;
+  gap: 8px;
+  margin: 13px 0;
+}
+
+.approval-change-grid span {
+  border-radius: 9px;
+  padding: 10px;
+  background: #fff;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.approval-change-grid small {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--teal-dark);
+}
+
+.approval-change-grid i { color: var(--purple); font-style: normal; }
+
 dd {
   margin: 5px 0 0;
   overflow-wrap: anywhere;
