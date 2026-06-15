@@ -62,7 +62,7 @@ Saat submit berhasil:
 - `MASTER_ASET.OPNAME` menjadi `DONE`.
 - `MASTER_ASET.KONDISI` dan `KONDISI TERAKHIR` mengikuti kondisi opname terbaru.
 - `STATUS TERAKHIR` menjadi `SUDAH OPNAME JANUARI - JUNI` atau `SUDAH OPNAME JULI - DESEMBER` sesuai tanggal aktual.
-- Foto dokumentasi bersifat opsional. Jika dipilih, Railway mengirim foto ke Google Apps Script upload relay dan URL Drive disimpan pada `DOKUMENTASI TERAKHIR`.
+- Foto dokumentasi wajib pada setiap submit opname. Railway mengirim foto ke Google Apps Script upload relay dan URL Drive disimpan pada `DOKUMENTASI TERAKHIR`.
 - Web kembali ke menu scan setelah penyimpanan berhasil.
 
 ## Perhitungan Dashboard
@@ -179,7 +179,7 @@ PHOTO_UPLOAD_SECRET=secret yang sama dengan variable Railway
 10. Deploy, izinkan akses, lalu salin URL `/exec` ke `PHOTO_UPLOAD_SCRIPT_URL` Railway.
 11. Set `PHOTO_UPLOAD_SECRET` Railway dengan nilai yang sama, lalu redeploy Railway.
 
-Foto opsional, dengan format JPG/PNG/WEBP dan ukuran maksimal 10 MB. Apps Script menyimpan foto menggunakan kuota Drive akun owner.
+Foto wajib untuk submit opname, dengan format JPG/PNG/WEBP dan ukuran maksimal 10 MB. Apps Script menyimpan foto menggunakan kuota Drive akun owner.
 
 Tes upload relay setelah deploy:
 
@@ -233,9 +233,9 @@ Setelah setup, pastikan header mengikuti struktur wajib. Header lama yang tidak 
 
 ## Approval Perubahan Detail Aset
 
-PIC ASET dapat mengajukan perubahan `USER`, `AREA`, dan `LOKASI DETAIL` melalui ikon pensil pada Detail Asset. Selama status masih `PENDING`, data `MASTER_ASET` tidak berubah.
+Setelah scan atau pencarian berhasil, tim aset yang sudah login dapat menekan tombol **Ubah Detail Aset** untuk mengajukan perubahan `USER`, `AREA`, dan `LOKASI DETAIL`. Pilihan `AREA` berbentuk dropdown yang dibaca dari area pada `MASTER_ASET` dan `ROLE`. Selama status masih `PENDING`, data `MASTER_ASET` tidak berubah.
 
-Tab **Approval Data** hanya muncul untuk login dengan `NAMA USER` tepat `GA CORPORATE`. Setelah disetujui, ketiga kolom otomatis diperbarui di `MASTER_ASET`. Persetujuan dan penolakan tetap tersimpan pada sheet `APPROVAL_PERUBAHAN_ASET` sebagai audit trail.
+Tab **Approval Data** hanya muncul untuk login dengan `NAMA USER` tepat `GA CORPORATE`. Setelah disetujui, ketiga kolom otomatis diperbarui di `MASTER_ASET` dan satu baris audit perubahan ditambahkan ke `LOG_OPNAME`. Persetujuan dan penolakan tetap tersimpan pada sheet `APPROVAL_PERUBAHAN_ASET` sebagai audit trail.
 
 ## Scanner HP
 

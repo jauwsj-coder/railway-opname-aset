@@ -100,6 +100,17 @@ def users():
     return jsonify({"users": names})
 
 
+@app.get("/api/areas")
+def areas():
+    require_user()
+    master_areas = {clean(row["AREA"]) for row in get_rows(get_worksheet(MASTER_SHEET), MASTER_HEADERS) if clean(row["AREA"])}
+    role_areas = set()
+    for row in get_rows(get_worksheet(ROLE_SHEET), ROLE_HEADERS):
+        role_areas.update(clean(area) for area in clean(row["AREA"]).split(",") if clean(area))
+    values = sorted({area for area in master_areas | role_areas if normalize(area) != "ALL"}, key=normalize)
+    return jsonify({"areas": values})
+
+
 @app.post("/api/login")
 def login():
     payload = request.get_json(silent=True) or {}
@@ -212,8 +223,6 @@ def find_asset(asset_code):
 @app.post("/api/asset-change-requests")
 def create_asset_change_request():
     identity = require_user()
-    if identity["role"] not in PIC_ROLES:
-        raise AppError("Pengajuan perubahan detail aset hanya dapat dibuat oleh PIC ASET.", 403)
     payload = request.get_json(silent=True) or {}
     code = normalize(payload.get("assetCode"))
     proposed_user = clean(payload.get("user"))
@@ -288,6 +297,8 @@ def submit_opname():
         raise AppError("NOMOR ASSET wajib diisi.")
     if condition not in GOOD_CONDITIONS | DAMAGED_CONDITIONS:
         raise AppError("KONDISI TERAKHIR harus OK/BAIK/GOOD atau RUSAK/BROKEN/MAINTENANCE/NOT OK.")
+    if not documentation:
+        raise AppError("Foto dokumentasi wajib diunggah sebelum menyimpan opname.")
 
     master = get_worksheet(MASTER_SHEET)
     values = get_sheet_values(master, MASTER_SHEET)
@@ -474,15 +485,33 @@ def process_asset_change_request(request_id, decision, approver, notes):
         master_values = get_sheet_values(master, MASTER_SHEET)
         validate_headers(master_values, MASTER_HEADERS, MASTER_SHEET)
         master_map = {header: index + 1 for index, header in enumerate(master_values[0])}
-        asset_row = next((row_number for row_number, row in enumerate(master_values[1:], start=2)
-                          if normalize(row_to_dict(master_values[0], row)["NOMOR ASSET"]) == normalize(change["NOMOR ASSET"])), None)
-        if not asset_row:
+        asset_row, asset = next(((row_number, row_to_dict(master_values[0], row)) for row_number, row in enumerate(master_values[1:], start=2)
+                                 if normalize(row_to_dict(master_values[0], row)["NOMOR ASSET"]) == normalize(change["NOMOR ASSET"])), (None, None))
+        if not asset:
             raise AppError("Aset pada pengajuan tidak lagi ditemukan di MASTER_ASET.", 404)
         master.batch_update([
             {"range": gspread.utils.rowcol_to_a1(asset_row, master_map["USER"]), "values": [[change["USER BARU"]]]},
             {"range": gspread.utils.rowcol_to_a1(asset_row, master_map["AREA"]), "values": [[change["AREA BARU"]]]},
             {"range": gspread.utils.rowcol_to_a1(asset_row, master_map["LOKASI DETAIL"]), "values": [[change["LOKASI DETAIL BARU"]]]},
         ], value_input_option="USER_ENTERED")
+        log = get_worksheet(LOG_SHEET)
+        ensure_required_headers(log, LOG_SHEET, LOG_HEADERS)
+        audit_notes = (
+            f"APPROVAL PERUBAHAN DATA {clean(change['ID PENGAJUAN'])}: "
+            f"USER {clean(change['USER LAMA']) or '-'} -> {clean(change['USER BARU']) or '-'}; "
+            f"AREA {clean(change['AREA LAMA']) or '-'} -> {clean(change['AREA BARU']) or '-'}; "
+            f"LOKASI DETAIL {clean(change['LOKASI DETAIL LAMA']) or '-'} -> {clean(change['LOKASI DETAIL BARU']) or '-'}; "
+            f"ALASAN: {clean(change['ALASAN']) or '-'}; CATATAN APPROVAL: {notes or '-'}"
+        )
+        append_record(log, LOG_SHEET, LOG_HEADERS, {
+            "TIMESTAMP": now_text(), "NOMOR ASSET": asset["NOMOR ASSET"], "TYPE": asset["TYPE"],
+            "NO LAYOUT": asset["NO LAYOUT"], "USER": change["USER BARU"], "OPNAME": asset["OPNAME"],
+            "KONDISI": asset["KONDISI"], "LOKASI DETAIL": change["LOKASI DETAIL BARU"], "AREA": change["AREA BARU"],
+            "KONDISI TERAKHIR": asset["KONDISI TERAKHIR"], "STATUS TERAKHIR": "APPROVED PERUBAHAN DATA",
+            "TANGGAL OPNAME TERAKHIR": now_text(), "KETERANGAN TERAKHIR": audit_notes,
+            "DOKUMENTASI TERAKHIR": asset["DOKUMENTASI TERAKHIR"], "NAMA PETUGAS": approver["name"],
+            "ID USER": approver["userId"], "ROLE": approver["role"],
+        })
 
     approval.batch_update([
         {"range": gspread.utils.rowcol_to_a1(request_row, approval_map["STATUS APPROVAL"]), "values": [[decision]]},

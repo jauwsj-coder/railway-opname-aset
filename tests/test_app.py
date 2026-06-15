@@ -79,7 +79,7 @@ class AppTest(unittest.TestCase):
     def test_submit_log_dashboard_and_score_rules(self, get_worksheet):
         get_worksheet.side_effect = self.worksheet
         _, headers = self.login()
-        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "BAIK", "notes": "Sesuai"})
+        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "BAIK", "notes": "Sesuai", "documentation": "https://drive.google.com/file/d/BAIK/view"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(self.log.appended[0]), len(application.LOG_HEADERS))
         self.assertEqual(self.log.appended[0][-3:], ["ADMIN PIC", "1002", "SUPER ADMIN, PIC ASET"])
@@ -89,7 +89,7 @@ class AppTest(unittest.TestCase):
         self.assertEqual(admin_score["completed"], 1)
         self.assertEqual(admin_score["status"], "Selesai")
 
-        second = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Perlu perbaikan"})
+        second = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Perlu perbaikan", "documentation": "https://drive.google.com/file/d/RUSAK/view"})
         self.assertEqual(second.json["summary"], {"total": 1, "completed": 1, "pending": 0, "good": 0, "damaged": 1})
         admin_score = next(item for item in second.json["scoreCard"] if item["name"] == "ADMIN PIC")
         self.assertEqual(admin_score["completed"], 1)
@@ -104,7 +104,7 @@ class AppTest(unittest.TestCase):
     def test_pure_super_admin_excluded_from_score(self, get_worksheet):
         get_worksheet.side_effect = self.worksheet
         _, headers = self.login("ADMIN", "1001")
-        self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": ""})
+        self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "", "documentation": "https://drive.google.com/file/d/RUSAK/view"})
         dashboard = self.client.get("/api/dashboard", headers=headers).json
         self.assertEqual(dashboard["summary"]["damaged"], 1)
         self.assertFalse(any(item["name"] == "ADMIN" for item in dashboard["scoreCard"]))
@@ -127,6 +127,19 @@ class AppTest(unittest.TestCase):
         self.assertEqual(score["scoreAreas"], "AREA B, AREA A")
         self.assertEqual(score["total"], 1)
         self.assertEqual(score["progress"], 0)
+
+    @patch("app.get_worksheet")
+    def test_area_options_come_from_master_and_role(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        response = self.client.get("/api/areas", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["areas"], ["AREA A", "AREA B", "AREA Z"])
+        request_response = self.client.post("/api/asset-change-requests", headers=headers, json={
+            "assetCode": "AST-0001", "user": "BUDI", "area": "AREA B",
+            "detailLocation": "KANTOR BARU", "reason": "Relokasi",
+        })
+        self.assertEqual(request_response.status_code, 200)
 
     @patch("app.get_worksheet")
     def test_pic_change_request_waits_for_ga_corporate_approval(self, get_worksheet):
@@ -155,6 +168,12 @@ class AppTest(unittest.TestCase):
         approval_updates = {item["range"]: item["values"][0][0] for item in self.approval.updates}
         self.assertIn("APPROVED", approval_updates.values())
         self.assertIn("GA CORPORATE", approval_updates.values())
+        approval_log = dict(zip(application.LOG_HEADERS, self.log.appended[0]))
+        self.assertEqual(approval_log["USER"], "USER BARU")
+        self.assertEqual(approval_log["AREA"], "AREA B")
+        self.assertEqual(approval_log["LOKASI DETAIL"], "RUANG BARU")
+        self.assertEqual(approval_log["STATUS TERAKHIR"], "APPROVED PERUBAHAN DATA")
+        self.assertEqual(approval_log["NAMA PETUGAS"], "GA CORPORATE")
 
     @patch("app.get_worksheet")
     def test_asset_change_request_rejects_unchanged_and_duplicate_pending(self, get_worksheet):
@@ -229,6 +248,18 @@ class AppTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["url"], "")
 
+    @patch("app.get_worksheet")
+    def test_submit_opname_requires_documentation(self, get_worksheet):
+        get_worksheet.side_effect = self.worksheet
+        _, headers = self.login()
+        response = self.client.post("/api/opname", headers=headers, json={
+            "assetCode": "AST-0001", "condition": "BAIK", "notes": "Sesuai",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("dokumentasi wajib", response.json["message"])
+        self.assertFalse(self.log.appended)
+        self.assertFalse(hasattr(self.master, "updates"))
+
     def test_unknown_endpoint_returns_clean_json_404(self):
         response = self.client.get("/not-a-real-endpoint")
         self.assertEqual(response.status_code, 404)
@@ -242,8 +273,12 @@ class AppTest(unittest.TestCase):
         self.assertIn('id="editNotesButton"', html)
         self.assertIn('id="cameraZoomControls"', html)
         self.assertIn('id="zoomRange"', html)
+        self.assertIn('id="documentationInput"', html)
+        self.assertIn('capture="environment" required', html)
         with open(os.path.join(os.path.dirname(application.__file__), "static", "app.js"), encoding="utf-8") as script:
-            self.assertIn("Jika terbaca, aset akan dicari otomatis.", script.read())
+            script_text = script.read()
+            self.assertIn("Jika terbaca, aset akan dicari otomatis.", script_text)
+            self.assertIn("Foto dokumentasi wajib diunggah", script_text)
 
     @patch("app.get_worksheet")
     def test_total_assets_survives_incomplete_log_headers(self, get_worksheet):
@@ -397,7 +432,7 @@ class AppTest(unittest.TestCase):
         self.log.values = [["TIMESTAMP", "NOMOR ASSET"], ["OLD", "AST-OLD"]]
         get_worksheet.side_effect = self.worksheet
         _, headers = self.login()
-        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Roda rusak"})
+        response = self.client.post("/api/opname", headers=headers, json={"assetCode": "AST-0001", "condition": "RUSAK", "notes": "Roda rusak", "documentation": "https://drive.google.com/file/d/RUSAK/view"})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(all(header in self.log.values[0] for header in application.LOG_HEADERS))
         appended = dict(zip(self.log.values[0], self.log.appended[0]))

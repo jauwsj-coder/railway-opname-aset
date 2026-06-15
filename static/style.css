@@ -457,6 +457,14 @@ dl div {
 
 .heading-row > .edit-pencil { flex: none; }
 
+.asset-edit-trigger {
+  min-height: 38px;
+  flex: none;
+  padding: 0 12px;
+  color: var(--purple);
+  font-size: 11px;
+}
+
 .asset-edit-form {
   margin-top: 18px;
   border-top: 1px solid var(--line);
