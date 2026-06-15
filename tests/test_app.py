@@ -197,6 +197,10 @@ class AppTest(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertIn('id="reader"', html)
         self.assertIn('id="editNotesButton"', html)
+        self.assertIn('id="cameraZoomControls"', html)
+        self.assertIn('id="zoomRange"', html)
+        with open(os.path.join(os.path.dirname(application.__file__), "static", "app.js"), encoding="utf-8") as script:
+            self.assertIn("Jika terbaca, aset akan dicari otomatis.", script.read())
 
     @patch("app.get_worksheet")
     def test_total_assets_survives_incomplete_log_headers(self, get_worksheet):

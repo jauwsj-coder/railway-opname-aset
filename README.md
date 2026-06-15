@@ -231,8 +231,12 @@ Setelah setup, pastikan header mengikuti struktur wajib. Header lama yang tidak 
 
 Gunakan domain Railway HTTPS. Izinkan kamera pada browser HP, lalu tekan **Scan QR dengan kamera** dan **Tangkap & Baca QR**. QR harus berisi `NOMOR ASSET`.
 
+- Saat QR terbaca dari tayangan kamera, sistem otomatis menutup kamera dan mencari NOMOR ASSET tanpa menekan tombol Tangkap.
+- Tombol **Tangkap & Baca QR** tetap tersedia sebagai cadangan jika QR sulit terbaca otomatis.
 - Sistem meminta mode autofocus berkelanjutan ketika kamera mendukungnya.
 - Ketuk area kamera untuk meminta fokus ulang ke QR.
+- Gunakan tombol `−`, slider, atau tombol `+` untuk zoom out dan zoom in.
+- Kontrol zoom hanya tampil jika kamera dan browser HP mendukung zoom.
 - Dukungan tap-to-focus mengikuti kemampuan kamera dan browser HP.
 
 ## Edit Keterangan PIC
