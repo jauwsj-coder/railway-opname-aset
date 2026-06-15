@@ -231,6 +231,16 @@ Setelah setup, pastikan header mengikuti struktur wajib. Header lama yang tidak 
 
 Gunakan domain Railway HTTPS. Izinkan kamera pada browser HP, lalu tekan **Scan QR dengan kamera** dan **Tangkap & Baca QR**. QR harus berisi `NOMOR ASSET`.
 
+- Sistem meminta mode autofocus berkelanjutan ketika kamera mendukungnya.
+- Ketuk area kamera untuk meminta fokus ulang ke QR.
+- Dukungan tap-to-focus mengikuti kemampuan kamera dan browser HP.
+
+## Edit Keterangan PIC
+
+User dengan role `PIC ASET` atau `SUPER ADMIN, PIC ASET` melihat tombol pensil pada bagian **KETERANGAN TERAKHIR**.
+
+Tekan tombol pensil untuk menyalin keterangan terakhir ke form opname, ubah teksnya, pilih kondisi aktual, lalu tekan **Simpan opname**. Perubahan tetap menggunakan alur submit opname yang sama agar `MASTER_ASET` dan `LOG_OPNAME` tetap sinkron.
+
 ## Upload dan Redeploy
 
 1. Upload seluruh isi folder ini ke repository GitHub.

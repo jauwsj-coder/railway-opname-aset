@@ -191,6 +191,13 @@ class AppTest(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json["path"], "/not-a-real-endpoint")
 
+    def test_ui_contains_tap_focus_and_edit_notes_controls(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('id="reader"', html)
+        self.assertIn('id="editNotesButton"', html)
+
     @patch("app.get_worksheet")
     def test_total_assets_survives_incomplete_log_headers(self, get_worksheet):
         self.log.values = [["TIMESTAMP", "NOMOR ASSET"]]
