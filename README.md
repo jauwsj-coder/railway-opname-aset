@@ -235,6 +235,8 @@ Setelah setup, pastikan header mengikuti struktur wajib. Header lama yang tidak 
 
 Setelah scan atau pencarian berhasil, tim aset yang sudah login dapat menekan tombol **Ubah Detail Aset** untuk mengajukan perubahan `USER`, `AREA`, dan `LOKASI DETAIL`. Pilihan `AREA` berbentuk dropdown yang dibaca dari area pada `MASTER_ASET` dan `ROLE`. Selama status masih `PENDING`, data `MASTER_ASET` tidak berubah.
 
+Jika sheet `APPROVAL_PERUBAHAN_ASET` belum tersedia saat tombol kirim ditekan, sistem otomatis membuat sheet beserta header wajibnya lalu menyimpan pengajuan.
+
 Tab **Approval Data** hanya muncul untuk login dengan `NAMA USER` tepat `GA CORPORATE`. Setelah disetujui, ketiga kolom otomatis diperbarui di `MASTER_ASET` dan satu baris audit perubahan ditambahkan ke `LOG_OPNAME`. Persetujuan dan penolakan tetap tersimpan pada sheet `APPROVAL_PERUBAHAN_ASET` sebagai audit trail.
 
 ## Scanner HP

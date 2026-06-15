@@ -245,7 +245,7 @@ def create_asset_change_request():
     )):
         raise AppError("Tidak ada perubahan detail aset yang diajukan.")
 
-    approval = get_worksheet(APPROVAL_SHEET)
+    approval = get_or_create_approval_sheet()
     ensure_required_headers(approval, APPROVAL_SHEET, APPROVAL_HEADERS)
     pending = next((row for row in get_rows(approval, APPROVAL_HEADERS)
                     if normalize(row["NOMOR ASSET"]) == code and normalize(row["STATUS APPROVAL"]) == "PENDING"), None)
@@ -266,7 +266,7 @@ def create_asset_change_request():
 def list_asset_change_requests():
     require_ga_corporate()
     status = normalize(request.args.get("status") or "PENDING")
-    rows = get_rows(get_worksheet(APPROVAL_SHEET), APPROVAL_HEADERS)
+    rows = get_rows(get_or_create_approval_sheet(), APPROVAL_HEADERS)
     if status != "ALL":
         rows = [row for row in rows if normalize(row["STATUS APPROVAL"]) == status]
     rows.reverse()
@@ -469,7 +469,7 @@ def require_ga_corporate():
 
 
 def process_asset_change_request(request_id, decision, approver, notes):
-    approval = get_worksheet(APPROVAL_SHEET)
+    approval = get_or_create_approval_sheet()
     approval_values = get_sheet_values(approval, APPROVAL_SHEET)
     validate_headers(approval_values, APPROVAL_HEADERS, APPROVAL_SHEET)
     approval_map = {header: index + 1 for index, header in enumerate(approval_values[0])}
@@ -1065,6 +1065,19 @@ def get_worksheet(name):
         raise AppError(f"Sheet {name} belum tersedia. Jalankan /api/setup.", 503) from exc
     except gspread.exceptions.APIError as exc:
         raise AppError(f"Sheet {name} tidak bisa dibaca. Periksa akses service account.", 503) from exc
+
+
+def get_or_create_approval_sheet():
+    try:
+        worksheet = get_worksheet(APPROVAL_SHEET)
+        ensure_required_headers(worksheet, APPROVAL_SHEET, APPROVAL_HEADERS)
+        return worksheet
+    except AppError as error:
+        if f"Sheet {APPROVAL_SHEET} belum tersedia" not in error.message:
+            raise
+    spreadsheet = get_spreadsheet()
+    ensure_worksheet(spreadsheet, APPROVAL_SHEET, APPROVAL_HEADERS)
+    return spreadsheet.worksheet(APPROVAL_SHEET)
 
 
 def get_sheet_values(worksheet, sheet_name):

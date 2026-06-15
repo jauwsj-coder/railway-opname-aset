@@ -189,6 +189,29 @@ class AppTest(unittest.TestCase):
         self.assertEqual(duplicate.status_code, 409)
 
     @patch("app.get_spreadsheet")
+    @patch("app.get_worksheet")
+    def test_change_request_auto_creates_missing_approval_sheet(self, get_worksheet, get_spreadsheet):
+        sheets_without_approval = {name: sheet for name, sheet in self.sheets.items() if name != application.APPROVAL_SHEET}
+        spreadsheet = FakeSpreadsheet(sheets_without_approval)
+
+        def worksheet_or_missing(name):
+            if name == application.APPROVAL_SHEET:
+                raise application.AppError(f"Sheet {name} belum tersedia. Jalankan /api/setup.", 503)
+            return sheets_without_approval[name]
+
+        get_worksheet.side_effect = worksheet_or_missing
+        get_spreadsheet.return_value = spreadsheet
+        _, headers = self.login()
+        response = self.client.post("/api/asset-change-requests", headers=headers, json={
+            "assetCode": "AST-0001", "user": "BUDI BARU", "area": "AREA B",
+            "detailLocation": "KANTOR BARU", "reason": "Relokasi",
+        })
+        self.assertEqual(response.status_code, 200)
+        created = spreadsheet.worksheet(application.APPROVAL_SHEET)
+        self.assertEqual(created.values[0], application.APPROVAL_HEADERS)
+        self.assertEqual(dict(zip(created.values[0], created.appended[0]))["STATUS APPROVAL"], "PENDING")
+
+    @patch("app.get_spreadsheet")
     def test_setup_appends_missing_headers_without_overwriting_data(self, get_spreadsheet):
         old_master = FakeWorksheet("MASTER_ASET", [["NOMOR ASSET", "TYPE"], ["AST-X", "MEJA"]])
         spreadsheet = FakeSpreadsheet({"MASTER_ASET": old_master})
